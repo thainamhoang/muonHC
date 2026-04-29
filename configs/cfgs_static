@@ -1,0 +1,40 @@
+global_vars:
+  data_root: /scratch/thahoa/era5-climate-learn
+  output_root: /home/thahoa/muonHC/output
+  seed: 42
+  mode: static
+
+data:
+  root_dir: ${global_vars.data_root}
+  stride: 6
+  temporal: false
+  mean: 278.45
+  std: 21.25
+
+model:
+  n_coeff: 64
+  in_channels: 1
+  embed_dim: 128
+  depth: 8
+  num_heads: 4
+  upscale: 4
+  decoder_hidden_dim: 256
+
+training:
+  device: cuda
+  seed: ${global_vars.seed}
+  batch_size: 32
+  lr: 2e-4
+  weight_decay: 1e-4
+  max_epochs: 50
+  patience: 10
+  num_workers: 4
+  pin_memory: true
+  persistent_workers: true
+  save_dir: ${global_vars.output_root}/${global_vars.mode}
+
+wandb:
+  entity: thainamhoang
+  project: muonHC
+  name: ${global_vars.mode}_baseline_${model.upscale}x
+  watch: false

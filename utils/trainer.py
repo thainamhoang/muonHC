@@ -1,0 +1,206 @@
+"""Simple training loop for downscaling models."""
+
+import os
+import torch
+import torch.nn as nn
+
+class Trainer:
+    def __init__(self, model, train_loader, val_loader, test_loader=None,
+                 optimizer=None, scheduler=None, device='cuda',
+                 max_epochs=50, patience=10, save_dir='checkpoints',
+                 spectral_lambda=0.0, target_mean=278.45, target_std=21.25,
+                 wandb_run=None, wandb_run_id=None, resume_path=None):
+        self.model = model.to(device)
+        self.train_loader = train_loader
+        self.val_loader = val_loader
+        self.test_loader = test_loader
+        self.optimizer = optimizer
+        self.scheduler = scheduler
+        self.device = device
+        self.max_epochs = max_epochs
+        self.patience = patience
+        self.save_dir = save_dir
+        self.spectral_lambda = spectral_lambda
+        self.target_mean = target_mean
+        self.target_std = target_std
+        self.wandb_run = wandb_run
+        self.wandb_run_id = wandb_run_id
+        self.start_epoch = 1
+
+        os.makedirs(save_dir, exist_ok=True)
+        self.best_val_rmse = float('inf')
+        self.best_epoch = 0
+        self.epochs_no_improve = 0
+        self.train_losses = []
+        self.val_losses = []
+        self.val_rmses_k = []
+        if resume_path is not None:
+            self.load_checkpoint(resume_path)
+
+    @property
+    def latest_checkpoint_path(self):
+        return os.path.join(self.save_dir, 'latest_checkpoint.pt')
+
+    @property
+    def best_checkpoint_path(self):
+        return os.path.join(self.save_dir, 'best_checkpoint.pt')
+
+    @property
+    def best_model_path(self):
+        return os.path.join(self.save_dir, 'best_model.pt')
+
+    def checkpoint_state(self, epoch):
+        state = {
+            'epoch': epoch,
+            'model_state': self.model.state_dict(),
+            'best_val_rmse': self.best_val_rmse,
+            'best_epoch': self.best_epoch,
+            'epochs_no_improve': self.epochs_no_improve,
+            'wandb_run_id': self.wandb_run_id,
+        }
+        if self.optimizer is not None:
+            state['optimizer'] = self.optimizer.state_dict()
+        if self.scheduler is not None:
+            state['scheduler'] = self.scheduler.state_dict()
+        return state
+
+    def save_checkpoint(self, path, epoch):
+        torch.save(self.checkpoint_state(epoch), path)
+
+    def load_checkpoint(self, path):
+        if not os.path.exists(path):
+            raise FileNotFoundError(f"Checkpoint not found: {path}")
+        print(f"Loading checkpoint: {path}")
+        ckpt = torch.load(path, map_location=self.device)
+        if 'model_state' in ckpt:
+            self.model.load_state_dict(ckpt['model_state'])
+        else:
+            self.model.load_state_dict(ckpt)
+        if self.optimizer is not None and 'optimizer' in ckpt:
+            self.optimizer.load_state_dict(ckpt['optimizer'])
+        if self.scheduler is not None and 'scheduler' in ckpt:
+            self.scheduler.load_state_dict(ckpt['scheduler'])
+        self.best_val_rmse = ckpt.get('best_val_rmse', self.best_val_rmse)
+        self.best_epoch = ckpt.get('best_epoch', self.best_epoch)
+        self.epochs_no_improve = ckpt.get('epochs_no_improve', self.epochs_no_improve)
+        self.wandb_run_id = ckpt.get('wandb_run_id', self.wandb_run_id)
+        self.start_epoch = ckpt.get('epoch', 0) + 1
+        print(
+            f"Resumed from epoch {self.start_epoch - 1} | "
+            f"best_val_rmse={self.best_val_rmse:.4f} K"
+        )
+
+    def train_epoch(self):
+        self.model.train()
+        total_loss = 0.0
+        for batch_idx, (lr, hr) in enumerate(self.train_loader):
+            lr, hr = lr.to(self.device), hr.to(self.device)
+            self.optimizer.zero_grad()
+            pred = self.model(lr)
+            # Loss: MSE + optional spectral loss
+            mse = nn.functional.mse_loss(pred, hr)
+            loss = mse  # spectral loss can be added later if needed
+            if self.spectral_lambda > 0:
+                from losses.spectral_loss import spectral_loss
+                loss = spectral_loss(pred, hr, lambda_=self.spectral_lambda)
+            loss.backward()
+            self.optimizer.step()
+            total_loss += loss.item() * lr.size(0)
+        return total_loss / len(self.train_loader.dataset)
+
+    @torch.no_grad()
+    def validate(self):
+        self.model.eval()
+        total_loss = 0.0
+        sum_sq_z = 0.0
+        n_values = 0
+        for lr, hr in self.val_loader:
+            lr, hr = lr.to(self.device), hr.to(self.device)
+            pred = self.model(lr)
+            loss = nn.functional.mse_loss(pred, hr)
+            total_loss += loss.item() * lr.size(0)
+            sum_sq_z += ((pred - hr) ** 2).sum().item()
+            n_values += hr.numel()
+        avg_loss = total_loss / len(self.val_loader.dataset)
+        val_rmse_z = (sum_sq_z / n_values) ** 0.5
+        val_rmse_k = val_rmse_z * self.target_std
+        return avg_loss, val_rmse_k, val_rmse_z
+
+    def train(self):
+        for epoch in range(self.start_epoch, self.max_epochs + 1):
+            train_loss = self.train_epoch()
+            val_loss, val_rmse_k, val_rmse_z = self.validate()
+            self.train_losses.append(train_loss)
+            self.val_losses.append(val_loss)
+            self.val_rmses_k.append(val_rmse_k)
+
+            print(f"Epoch {epoch:3d}/{self.max_epochs} | "
+                  f"Train Loss: {train_loss:.6f} | Val Loss: {val_loss:.6f} | "
+                  f"Val RMSE (K): {val_rmse_k:.4f} | Val RMSE (z): {val_rmse_z:.6f}")
+
+            # Scheduler step
+            if self.scheduler is not None:
+                self.scheduler.step()
+                current_lr = float(self.scheduler.get_last_lr()[0])
+            else:
+                current_lr = float(self.optimizer.param_groups[0]['lr'])
+
+            if self.wandb_run is not None:
+                self.wandb_run.log(
+                    {
+                        'epoch': epoch,
+                        'lr': current_lr,
+                        'train/loss': float(train_loss),
+                        'val/loss': float(val_loss),
+                        'val/rmse_k': float(val_rmse_k),
+                        'val/rmse_z': float(val_rmse_z),
+                        'best/val_rmse_k': float(min(self.best_val_rmse, val_rmse_k)),
+                        'train/spectral_lambda': float(self.spectral_lambda),
+                    },
+                    step=epoch,
+                    commit=True,
+                )
+
+            # Early stopping
+            if val_rmse_k < self.best_val_rmse:
+                self.best_val_rmse = val_rmse_k
+                self.best_epoch = epoch
+                self.epochs_no_improve = 0
+                # Save best model
+                torch.save(self.model.state_dict(), self.best_model_path)
+                self.save_checkpoint(self.best_checkpoint_path, epoch)
+                print(f"  --> New best model (RMSE {val_rmse_k:.4f} K)")
+            else:
+                self.epochs_no_improve += 1
+                if self.epochs_no_improve >= self.patience:
+                    print(f"Early stopping at epoch {epoch} (no improvement for {self.patience} epochs)")
+                    break
+
+            self.save_checkpoint(self.latest_checkpoint_path, epoch)
+
+        # Load best model
+        self.model.load_state_dict(torch.load(self.best_model_path, map_location=self.device))
+        print(f"Training finished. Best epoch: {self.best_epoch}, Best Val RMSE: {self.best_val_rmse:.4f} K")
+        if self.wandb_run is not None:
+            self.wandb_run.summary['best/epoch'] = self.best_epoch
+            self.wandb_run.summary['best/val_rmse_k'] = float(self.best_val_rmse)
+        # Optional test evaluation
+        if self.test_loader is not None:
+            test_rmse = self.test()
+            print(f"Test RMSE: {test_rmse:.4f} K")
+            if self.wandb_run is not None:
+                self.wandb_run.log({'test/rmse_k': float(test_rmse)}, commit=True)
+                self.wandb_run.summary['test/rmse_k'] = float(test_rmse)
+        return self.best_val_rmse
+
+    @torch.no_grad()
+    def test(self):
+        self.model.eval()
+        sum_sq_z = 0.0
+        n_values = 0
+        for lr, hr in self.test_loader:
+            lr, hr = lr.to(self.device), hr.to(self.device)
+            pred = self.model(lr)
+            sum_sq_z += ((pred - hr) ** 2).sum().item()
+            n_values += hr.numel()
+        return (sum_sq_z / n_values) ** 0.5 * self.target_std
