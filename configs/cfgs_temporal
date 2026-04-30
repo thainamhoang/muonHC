@@ -11,6 +11,13 @@ data:
   mean: 278.45
   std: 21.25
 
+dataloader:
+  batch_size: 64
+  num_workers: 4
+  pin_memory: true
+  persistent_workers: true
+  prefetch_factor: 2
+
 model:
   n_coeff: 64
   in_channels: 3
@@ -23,15 +30,20 @@ model:
 training:
   device: cuda
   seed: ${global_vars.seed}
-  batch_size: 16
-  lr: 2e-4
-  weight_decay: 1e-4
   max_epochs: 50
   patience: 10
-  num_workers: 4
-  pin_memory: true
-  persistent_workers: true
   save_dir: ${global_vars.output_root}/${global_vars.mode}
+  optimizer:
+    type: adamw
+    lr: 2e-4
+    weight_decay: 1e-4
+    betas: [0.9, 0.999]
+  scheduler:
+    type: warmup_cosine
+    warmup_epochs: 5
+    warmup_start_factor: 0.01
+    eta_min: 1e-6
+    step_by: step
 
 wandb:
   entity: thainamhoang

@@ -9,7 +9,8 @@ class Trainer:
                  optimizer=None, scheduler=None, device='cuda',
                  max_epochs=50, patience=10, save_dir='checkpoints',
                  spectral_lambda=0.0, target_mean=278.45, target_std=21.25,
-                 wandb_run=None, wandb_run_id=None, resume_path=None):
+                 wandb_run=None, wandb_run_id=None, scheduler_step_by='epoch',
+                 resume_path=None):
         self.model = model.to(device)
         self.train_loader = train_loader
         self.val_loader = val_loader
@@ -25,6 +26,7 @@ class Trainer:
         self.target_std = target_std
         self.wandb_run = wandb_run
         self.wandb_run_id = wandb_run_id
+        self.scheduler_step_by = scheduler_step_by
         self.start_epoch = 1
 
         os.makedirs(save_dir, exist_ok=True)
@@ -67,6 +69,9 @@ class Trainer:
     def save_checkpoint(self, path, epoch):
         torch.save(self.checkpoint_state(epoch), path)
 
+    def current_lr(self):
+        return float(self.optimizer.param_groups[0]['lr'])
+
     def load_checkpoint(self, path):
         if not os.path.exists(path):
             raise FileNotFoundError(f"Checkpoint not found: {path}")
@@ -105,6 +110,8 @@ class Trainer:
                 loss = spectral_loss(pred, hr, lambda_=self.spectral_lambda)
             loss.backward()
             self.optimizer.step()
+            if self.scheduler is not None and self.scheduler_step_by == 'step':
+                self.scheduler.step()
             total_loss += loss.item() * lr.size(0)
         return total_loss / len(self.train_loader.dataset)
 
@@ -139,11 +146,9 @@ class Trainer:
                   f"Val RMSE (K): {val_rmse_k:.4f} | Val RMSE (z): {val_rmse_z:.6f}")
 
             # Scheduler step
-            if self.scheduler is not None:
+            if self.scheduler is not None and self.scheduler_step_by == 'epoch':
                 self.scheduler.step()
-                current_lr = float(self.scheduler.get_last_lr()[0])
-            else:
-                current_lr = float(self.optimizer.param_groups[0]['lr'])
+            current_lr = self.current_lr()
 
             if self.wandb_run is not None:
                 self.wandb_run.log(
