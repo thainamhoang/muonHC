@@ -40,11 +40,13 @@ class DownscalingDataset(Dataset):
         hr_dir: str,
         partition: str,
         stride: int = 6,
+        temporal: bool = False,
         lr_preload: bool = False,
         hr_preload: bool = False,
     ):
         self.stride = stride
         self.partition = partition
+        self.temporal = temporal
 
         # Resolve per-resolution preload flags
         # Explicit lr_preload / hr_preload take priority over legacy preload
@@ -171,6 +173,18 @@ class DownscalingDataset(Dataset):
 
         return lr, hr
 
+    def _get_lr_raw_by_real_idx(self, real_idx: int):
+        shard_idx = real_idx // self.T_per_shard
+        t_idx = real_idx % self.T_per_shard
+        if self.lr_preload:
+            return self._lr_data[real_idx]
+        if not hasattr(self, "_cache_lr_shard_idx"):
+            self._cache_lr_shard_idx = -1
+        if shard_idx != self._cache_lr_shard_idx:
+            self._cache_lr = np.load(self.lr_shards[shard_idx])["2m_temperature"]
+            self._cache_lr_shard_idx = shard_idx
+        return self._cache_lr[t_idx]
+
     # ── Dataset item ──────────────────────────────────────────────────────
 
     def __getitem__(self, idx: int):
@@ -180,15 +194,26 @@ class DownscalingDataset(Dataset):
         hr_raw = torch.from_numpy(hr_np).to(dtype=torch.float32)  # [1, H_hr, W_hr]
 
         # ── Z-score normalize ─────────────────────────────────────────────
-        lr_norm = (lr_raw - self.lr_mean) * self.lr_inv_std
+        if self.temporal:
+            real_idx = self.indices[idx]
+            total = self.T_per_shard * len(self.lr_shards)
+            prev_idx = max(0, real_idx - 1)
+            next_idx = min(total - 1, real_idx + 1)
+            lr_prev = torch.from_numpy(self._get_lr_raw_by_real_idx(prev_idx)).to(dtype=torch.float32)
+            lr_next = torch.from_numpy(self._get_lr_raw_by_real_idx(next_idx)).to(dtype=torch.float32)
+            lr_norm = torch.cat(
+                [
+                    (lr_prev - self.lr_mean) * self.lr_inv_std,
+                    (lr_raw - self.lr_mean) * self.lr_inv_std,
+                    (lr_next - self.lr_mean) * self.lr_inv_std,
+                ],
+                dim=0,
+            )
+        else:
+            lr_norm = (lr_raw - self.lr_mean) * self.lr_inv_std
         hr_norm = (hr_raw - self.hr_mean) * self.hr_inv_std
 
-        # ── SSL encoder input: z-score → [0,1] → ImageNet ─────────────────
-        lr_01 = torch.clamp(lr_norm / 6.0 + 0.5, 0.0, 1.0)  # [-3σ,+3σ] → [0,1]
-        lr_imagenet = lr_01.expand(3, -1, -1)
-        lr_imagenet = (lr_imagenet - self.IMAGENET_MEAN) / self.IMAGENET_STD
-
-        return lr_imagenet, lr_norm, hr_norm
+        return lr_norm, hr_norm
 
     # ── Worker init ───────────────────────────────────────────────────────
 

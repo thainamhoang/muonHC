@@ -27,7 +27,7 @@ if PROJECT_DIR not in sys.path:
     sys.path.insert(0, PROJECT_DIR)
 
 from models.downscaling_model import DownscalingModel
-from datasets.temporal_dataset import TemporalDownscalingDataset
+from datasets.downscaling_dataset import DownscalingDataset
 from utils.trainer import Trainer
 
 
@@ -197,33 +197,37 @@ def main():
         if num_workers > 0 else False
     )
     prefetch_factor = loader_cfg.get('prefetch_factor', None)
+    lr_dir = config.data.lr_dir
+    hr_dir = config.data.hr_dir
+    print(f"LR directory : {lr_dir}")
+    print(f"HR directory : {hr_dir}")
 
-    train_dataset = TemporalDownscalingDataset(
-        root_dir=config.data.root_dir,
-        split='train',
+    train_dataset = DownscalingDataset(
+        lr_dir=lr_dir,
+        hr_dir=hr_dir,
+        partition='train',
         temporal=temporal,
         stride=config.data.stride,
-        normalize=True,
-        mean=config.data.mean,
-        std=config.data.std
+        lr_preload=bool(config.data.get('lr_preload_train', True)),
+        hr_preload=bool(config.data.get('hr_preload_train', False)),
     )
-    val_dataset = TemporalDownscalingDataset(
-        root_dir=config.data.root_dir,
-        split='val',
+    val_dataset = DownscalingDataset(
+        lr_dir=lr_dir,
+        hr_dir=hr_dir,
+        partition='val',
         temporal=temporal,
         stride=config.data.stride,
-        normalize=True,
-        mean=config.data.mean,
-        std=config.data.std
+        lr_preload=bool(config.data.get('lr_preload_eval', True)),
+        hr_preload=bool(config.data.get('hr_preload_eval', True)),
     )
-    test_dataset = TemporalDownscalingDataset(
-        root_dir=config.data.root_dir,
-        split='test',
+    test_dataset = DownscalingDataset(
+        lr_dir=lr_dir,
+        hr_dir=hr_dir,
+        partition='test',
         temporal=temporal,
         stride=config.data.stride,
-        normalize=True,
-        mean=config.data.mean,
-        std=config.data.std
+        lr_preload=bool(config.data.get('lr_preload_eval', True)),
+        hr_preload=bool(config.data.get('hr_preload_eval', True)),
     )
 
     def make_loader(dataset, shuffle):
@@ -236,6 +240,8 @@ def main():
         }
         if num_workers > 0 and prefetch_factor is not None:
             kwargs['prefetch_factor'] = prefetch_factor
+        if num_workers > 0 and hasattr(dataset, 'worker_init_fn'):
+            kwargs['worker_init_fn'] = dataset.worker_init_fn
         return DataLoader(dataset, **kwargs)
 
     train_loader = make_loader(train_dataset, shuffle=True)
