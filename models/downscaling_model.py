@@ -4,7 +4,6 @@ import torch
 import torch.nn as nn
 from .fck import LocalDCTConv
 from .vit import ViTBackbone
-from .geo_inr import GeoINR
 from .decoder import PixelShuffleDecoder
 
 class DownscalingModel(nn.Module):
@@ -19,7 +18,11 @@ class DownscalingModel(nn.Module):
         vit_in_channels = in_channels * n_coeff
         self.vit = ViTBackbone(vit_in_channels, embed_dim=embed_dim, depth=depth,
                                num_heads=num_heads, patch_size=1)
-        self.geo_inr = GeoINR(**geo_inr_args) if geo_inr_args else None
+        if geo_inr_args:
+            from .geo_inr import GeoINR
+            self.geo_inr = GeoINR(**geo_inr_args)
+        else:
+            self.geo_inr = None
         self.decoder = PixelShuffleDecoder(embed_dim, upscale=upscale, hidden_dim=hidden_dim)
 
     def forward(self, x_lr):

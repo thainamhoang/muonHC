@@ -5,7 +5,7 @@ Spherical harmonic basis generation from GeoFAR, adapted for a given grid.
 import torch
 import torch.nn as nn
 import numpy as np
-from scipy.special import sph_harm  # require scipy>=1.8
+from scipy.special import sph_harm_y
 
 def spherical_harmonic_basis(latitudes, longitudes, n_basis=8):
     """Generate real spherical harmonic basis Y_l^m evaluated on a lat/lon grid.
@@ -23,7 +23,7 @@ def spherical_harmonic_basis(latitudes, longitudes, n_basis=8):
     for l in range(n_basis):
         for m in range(-l, l+1):
             # Compute real part (imaginary part removed for simplicity)
-            Y = sph_harm(abs(m), l, PHI, THETA)
+            Y = sph_harm_y(l, abs(m), THETA, PHI)
             if m < 0:
                 Y = np.sqrt(2) * (-1)**m * Y.imag  # real spherical harmonics convention
             elif m == 0:
