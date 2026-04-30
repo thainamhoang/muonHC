@@ -19,6 +19,7 @@ data:
 
 dataloader:
   batch_size: 64
+  train_shuffle: true
   num_workers: 4
   pin_memory: true
   persistent_workers: true
@@ -38,6 +39,7 @@ training:
   seed: ${global_vars.seed}
   max_epochs: 50
   patience: 10
+  log_interval: 25
   save_dir: ${global_vars.output_root}/${global_vars.mode}
   optimizer:
     type: adamw

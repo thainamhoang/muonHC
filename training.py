@@ -244,7 +244,10 @@ def main():
             kwargs['worker_init_fn'] = dataset.worker_init_fn
         return DataLoader(dataset, **kwargs)
 
-    train_loader = make_loader(train_dataset, shuffle=True)
+    train_loader = make_loader(
+        train_dataset,
+        shuffle=bool(loader_cfg.get('train_shuffle', True)),
+    )
     val_loader = make_loader(val_dataset, shuffle=False)
     test_loader = make_loader(test_dataset, shuffle=False)
 
@@ -297,6 +300,7 @@ def main():
         wandb_run=run,
         wandb_run_id=run.id if run is not None else None,
         scheduler_step_by=scheduler_step_by,
+        log_interval=int(config.training.get('log_interval', 50)),
         resume_path=resume_path,
     )
 

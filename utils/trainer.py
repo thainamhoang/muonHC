@@ -10,7 +10,7 @@ class Trainer:
                  max_epochs=50, patience=10, save_dir='checkpoints',
                  spectral_lambda=0.0, target_mean=278.45, target_std=21.25,
                  wandb_run=None, wandb_run_id=None, scheduler_step_by='epoch',
-                 resume_path=None):
+                 log_interval=50, resume_path=None):
         self.model = model.to(device)
         self.train_loader = train_loader
         self.val_loader = val_loader
@@ -27,6 +27,7 @@ class Trainer:
         self.wandb_run = wandb_run
         self.wandb_run_id = wandb_run_id
         self.scheduler_step_by = scheduler_step_by
+        self.log_interval = log_interval
         self.start_epoch = 1
 
         os.makedirs(save_dir, exist_ok=True)
@@ -95,12 +96,15 @@ class Trainer:
             f"best_val_rmse={self.best_val_rmse:.4f} K"
         )
 
-    def train_epoch(self):
+    def train_epoch(self, epoch):
         self.model.train()
         total_loss = 0.0
+        n_batches = len(self.train_loader)
+        print(f"Starting epoch {epoch}/{self.max_epochs} ({n_batches} train batches)", flush=True)
         for batch_idx, (lr, hr) in enumerate(self.train_loader):
-            lr, hr = lr.to(self.device), hr.to(self.device)
-            self.optimizer.zero_grad()
+            lr = lr.to(self.device, non_blocking=True)
+            hr = hr.to(self.device, non_blocking=True)
+            self.optimizer.zero_grad(set_to_none=True)
             pred = self.model(lr)
             # Loss: MSE + optional spectral loss
             mse = nn.functional.mse_loss(pred, hr)
@@ -113,6 +117,16 @@ class Trainer:
             if self.scheduler is not None and self.scheduler_step_by == 'step':
                 self.scheduler.step()
             total_loss += loss.item() * lr.size(0)
+            if (
+                self.log_interval > 0
+                and ((batch_idx + 1) % self.log_interval == 0 or batch_idx + 1 == n_batches)
+            ):
+                avg_loss = total_loss / ((batch_idx + 1) * lr.size(0))
+                print(
+                    f"  batch {batch_idx + 1:4d}/{n_batches} | "
+                    f"loss {avg_loss:.6f} | lr {self.current_lr():.3e}",
+                    flush=True,
+                )
         return total_loss / len(self.train_loader.dataset)
 
     @torch.no_grad()
@@ -122,7 +136,8 @@ class Trainer:
         sum_sq_z = 0.0
         n_values = 0
         for lr, hr in self.val_loader:
-            lr, hr = lr.to(self.device), hr.to(self.device)
+            lr = lr.to(self.device, non_blocking=True)
+            hr = hr.to(self.device, non_blocking=True)
             pred = self.model(lr)
             loss = nn.functional.mse_loss(pred, hr)
             total_loss += loss.item() * lr.size(0)
@@ -135,7 +150,7 @@ class Trainer:
 
     def train(self):
         for epoch in range(self.start_epoch, self.max_epochs + 1):
-            train_loss = self.train_epoch()
+            train_loss = self.train_epoch(epoch)
             val_loss, val_rmse_k, val_rmse_z = self.validate()
             self.train_losses.append(train_loss)
             self.val_losses.append(val_loss)
@@ -204,7 +219,8 @@ class Trainer:
         sum_sq_z = 0.0
         n_values = 0
         for lr, hr in self.test_loader:
-            lr, hr = lr.to(self.device), hr.to(self.device)
+            lr = lr.to(self.device, non_blocking=True)
+            hr = hr.to(self.device, non_blocking=True)
             pred = self.model(lr)
             sum_sq_z += ((pred - hr) ** 2).sum().item()
             n_values += hr.numel()
