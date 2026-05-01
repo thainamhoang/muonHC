@@ -20,7 +20,7 @@ data:
 dataloader:
   batch_size: 64
   train_shuffle: true
-  num_workers: 8
+  num_workers: 12
   pin_memory: true
   persistent_workers: true
   prefetch_factor: 2
