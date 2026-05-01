@@ -37,3 +37,28 @@ class PixelShuffleDecoder(nn.Module):
         x = self.gelu(x)
         x = self.conv3(x)          # (B, 1, H*4, W*4)
         return x
+
+
+class FiLMDecoder(nn.Module):
+    """Pixel-shuffle decoder with optional FiLM conditioning after upsampling."""
+
+    def __init__(self, in_channels, upscale=4, hidden_dim=256):
+        super().__init__()
+        self.upscale = upscale
+        self.conv1 = nn.Conv2d(in_channels, hidden_dim * upscale * upscale, kernel_size=1)
+        self.pixel_shuffle = nn.PixelShuffle(upscale)
+        self.gelu = nn.GELU()
+        self.conv2 = nn.Conv2d(hidden_dim, hidden_dim, kernel_size=3, padding=1)
+        self.conv3 = nn.Conv2d(hidden_dim, 1, kernel_size=3, padding=1)
+        self.conv3.apply(init_conv_decoder)
+
+    def forward(self, x, gamma=None, beta=None):
+        x = self.conv1(x)
+        x = self.pixel_shuffle(x)
+        if gamma is not None and beta is not None:
+            x = (1.0 + gamma) * x + beta
+        x = self.gelu(x)
+        x = self.conv2(x)
+        x = self.gelu(x)
+        x = self.conv3(x)
+        return x

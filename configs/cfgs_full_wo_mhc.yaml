@@ -1,0 +1,65 @@
+global_vars:
+  data_root: /scratch/thahoa/climate/era5-climate-learn/data
+  output_root: /home/thahoa/muonHC/output
+  lr_deg: 5.625
+  hr_deg: 1.40625
+  var: 2m_temperature
+  seed: 42
+  mode: phase2_wo_mhc
+
+data:
+  lr_dir: ${global_vars.data_root}/${global_vars.lr_deg}deg/${global_vars.var}
+  hr_dir: ${global_vars.data_root}/${global_vars.hr_deg}deg/${global_vars.var}
+  stride: 6
+  temporal: true
+  lr_preload_train: true
+  hr_preload_train: false
+  lr_preload_eval: true
+  hr_preload_eval: true
+
+dataloader:
+  batch_size: 32
+  train_shuffle: true
+  num_workers: 4
+  pin_memory: true
+  persistent_workers: true
+  prefetch_factor: 2
+
+model:
+  n_coeff: 64
+  in_channels: 3
+  embed_dim: 128
+  num_heads: 4
+  upscale: 4
+  decoder_hidden_dim: 256
+  backbone: vit
+  depth: 16
+
+training:
+  device: cuda
+  seed: ${global_vars.seed}
+  max_epochs: 100
+  patience: 15
+  log_interval: 25
+  save_dir: ${global_vars.output_root}/${global_vars.mode}
+  optimizer:
+    type: muon_adamw
+    muon_lr: 0.004
+    muon_weight_decay: 0.05
+    muon_momentum: 0.95
+    adamw_lr: 1e-4
+    adamw_weight_decay: 0.1
+  scheduler:
+    type: warmup_cosine
+    warmup_epochs: 10
+    warmup_start_factor: 0.01
+    eta_min: 1e-6
+    step_by: step
+  loss:
+    spectral_lambda: 0.1
+
+wandb:
+  entity: thainamhoang
+  project: muonHC
+  name: ${global_vars.mode}_${model.backbone}_${model.upscale}x
+  watch: false
