@@ -3,7 +3,6 @@
 #SBATCH --output=/home/thahoa/muonHC/logs/%x-%j.out
 #SBATCH --error=/home/thahoa/muonHC/logs/%x-%j.err
 #SBATCH --time=24:00:00
-#SBATCH --nodes=1
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=16
 #SBATCH --mem=64G
@@ -55,4 +54,4 @@ NUM_GPUS=$(echo $CUDA_VISIBLE_DEVICES | tr "," "\n" | wc -l)
 echo "Using $NUM_GPUS GPU(s): $CUDA_VISIBLE_DEVICES"
 
 # Launch training
-torchrun --nproc_per_node=$NUM_GPUS training.py --config $CONFIG_FILE
+torchrun --nproc_per_node=$NUM_GPUS /home/thahoa/muonHC/training.py --config $CONFIG_FILE
