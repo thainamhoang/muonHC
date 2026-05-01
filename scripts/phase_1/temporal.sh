@@ -1,5 +1,5 @@
 #!/bin/bash -l
-#SBATCH --job-name=muonhc_phase1_static
+#SBATCH --job-name=muonhc_phase1_temporal
 #SBATCH --output=/home/thahoa/muonHC/logs/%x-%j.out
 #SBATCH --error=/home/thahoa/muonHC/logs/%x-%j.err
 #SBATCH --time=24:00:00
@@ -24,7 +24,7 @@ eval "$(mamba shell hook --shell bash)"
 mamba activate runai
 
 ENV_FILE="/home/thahoa/muonHC/.env"
-CONFIG_FILE="/home/thahoa/muonHC/configs/cfgs_static.yaml"
+CONFIG_FILE="/home/thahoa/muonHC/configs/phase_1/cfgs_temporal.yaml"
 
 if [ -f "$ENV_FILE" ]; then
     echo "Loading environment variables from $ENV_FILE"
