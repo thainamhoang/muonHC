@@ -18,9 +18,9 @@ data:
   hr_preload_eval: true
 
 dataloader:
-  batch_size: 64
+  batch_size: 32
   train_shuffle: true
-  num_workers: 12
+  num_workers: 8
   pin_memory: true
   persistent_workers: true
   prefetch_factor: 2
@@ -50,6 +50,7 @@ training:
   seed: ${global_vars.seed}
   max_epochs: 100
   patience: 15
+  grad_accum_steps: 2
   log_interval: 25
   save_dir: ${global_vars.output_root}/${global_vars.mode}
   optimizer:

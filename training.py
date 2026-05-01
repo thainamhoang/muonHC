@@ -8,6 +8,7 @@ Usage:
 import os
 import sys
 import argparse
+import math
 from omegaconf import OmegaConf
 
 PROJECT_DIR = os.path.abspath(os.path.dirname(__file__))
@@ -22,6 +23,15 @@ from utils.runtime import resolve_device, seed_everything, to_plain_container
 from utils.schedulers import build_scheduler
 from utils.trainer import Trainer
 from utils.wandb_utils import peek_wandb_run_id, setup_wandb
+
+
+def get_spectral_lambda(config):
+    if config.get('loss') is not None:
+        return float(config.loss.get('spectral_lambda', 0.0))
+    if config.training.get('loss') is not None:
+        return float(config.training.loss.get('spectral_lambda', 0.0))
+    return 0.0
+
 
 def main():
     parser = argparse.ArgumentParser()
@@ -73,18 +83,18 @@ def main():
     setup_geo_inr_grid(model, config.data.hr_dir, train_dataset.hr_shape, device)
 
     total_epochs = config.training.max_epochs
+    grad_accum_steps = int(config.training.get('grad_accum_steps', 1))
+    optimizer_steps_per_epoch = math.ceil(len(train_loader) / max(1, grad_accum_steps))
     optimizer = build_optimizer(model, config.training, device=device)
     scheduler, scheduler_step_by = build_scheduler(
         optimizer,
         config.training,
-        steps_per_epoch=len(train_loader),
+        steps_per_epoch=optimizer_steps_per_epoch,
     )
 
     # Spectral loss lambda (optional)
-    spectral_lambda = config.get('loss', {}).get(
-        'spectral_lambda',
-        config.training.get('loss', {}).get('spectral_lambda', 0.0),
-    )
+    spectral_lambda = get_spectral_lambda(config)
+    print(f"Spectral loss lambda: {spectral_lambda}")
     resume_path = args.resume
     wandb_run_id = peek_wandb_run_id(resume_path)
     run = setup_wandb(config, run_id=wandb_run_id)
@@ -114,6 +124,7 @@ def main():
         scheduler_step_by=scheduler_step_by,
         log_interval=int(config.training.get('log_interval', 50)),
         resume_path=resume_path,
+        grad_accum_steps=grad_accum_steps,
     )
 
     best_val_rmse = trainer.train()

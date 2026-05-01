@@ -10,7 +10,7 @@ class Trainer:
                  max_epochs=50, patience=10, save_dir='checkpoints',
                  spectral_lambda=0.0, target_mean=278.45, target_std=21.25,
                  wandb_run=None, wandb_run_id=None, scheduler_step_by='epoch',
-                 log_interval=50, resume_path=None):
+                 log_interval=50, resume_path=None, grad_accum_steps=1):
         self.model = model.to(device)
         self.train_loader = train_loader
         self.val_loader = val_loader
@@ -28,6 +28,7 @@ class Trainer:
         self.wandb_run_id = wandb_run_id
         self.scheduler_step_by = scheduler_step_by
         self.log_interval = log_interval
+        self.grad_accum_steps = max(1, int(grad_accum_steps))
         self.start_epoch = 1
 
         os.makedirs(save_dir, exist_ok=True)
@@ -39,6 +40,12 @@ class Trainer:
         self.val_rmses_k = []
         if resume_path is not None:
             self.load_checkpoint(resume_path)
+        if self.wandb_run is not None:
+            self.wandb_run.summary['config/spectral_lambda'] = float(self.spectral_lambda)
+            self.wandb_run.summary['config/grad_accum_steps'] = int(self.grad_accum_steps)
+            self.wandb_run.summary['config/effective_batch_size'] = (
+                int(self.train_loader.batch_size) * int(self.grad_accum_steps)
+            )
 
     @property
     def latest_checkpoint_path(self):
@@ -100,11 +107,15 @@ class Trainer:
         self.model.train()
         total_loss = 0.0
         n_batches = len(self.train_loader)
-        print(f"Starting epoch {epoch}/{self.max_epochs} ({n_batches} train batches)", flush=True)
+        print(
+            f"Starting epoch {epoch}/{self.max_epochs} "
+            f"({n_batches} train batches, grad_accum_steps={self.grad_accum_steps})",
+            flush=True,
+        )
+        self.optimizer.zero_grad(set_to_none=True)
         for batch_idx, (lr, hr) in enumerate(self.train_loader):
             lr = lr.to(self.device, non_blocking=True)
             hr = hr.to(self.device, non_blocking=True)
-            self.optimizer.zero_grad(set_to_none=True)
             pred = self.model(lr)
             # Loss: MSE + optional spectral loss
             mse = nn.functional.mse_loss(pred, hr)
@@ -112,10 +123,19 @@ class Trainer:
             if self.spectral_lambda > 0:
                 from losses.spectral_loss import spectral_loss
                 loss = spectral_loss(pred, hr, lambda_=self.spectral_lambda)
-            loss.backward()
-            self.optimizer.step()
-            if self.scheduler is not None and self.scheduler_step_by == 'step':
-                self.scheduler.step()
+            scaled_loss = loss / self.grad_accum_steps
+            scaled_loss.backward()
+
+            should_step = (
+                (batch_idx + 1) % self.grad_accum_steps == 0
+                or batch_idx + 1 == n_batches
+            )
+            if should_step:
+                self.optimizer.step()
+                self.optimizer.zero_grad(set_to_none=True)
+                if self.scheduler is not None and self.scheduler_step_by == 'step':
+                    self.scheduler.step()
+
             total_loss += loss.item() * lr.size(0)
             if (
                 self.log_interval > 0
@@ -166,10 +186,12 @@ class Trainer:
             current_lr = self.current_lr()
 
             if self.wandb_run is not None:
+                effective_batch_size = self.train_loader.batch_size * self.grad_accum_steps
                 self.wandb_run.log(
                     {
                         'epoch': epoch,
                         'lr': current_lr,
+                        'train/effective_batch_size': effective_batch_size,
                         'train/loss': float(train_loss),
                         'val/loss': float(val_loss),
                         'val/rmse_k': float(val_rmse_k),
