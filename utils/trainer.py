@@ -4,13 +4,30 @@ import os
 import torch
 import torch.nn as nn
 
+
+def _resolve_amp_dtype(dtype_name):
+    dtype_name = str(dtype_name).lower()
+    if dtype_name in ("bf16", "bfloat16"):
+        return torch.bfloat16
+    if dtype_name in ("fp16", "float16", "half"):
+        return torch.float16
+    raise ValueError(f"Unsupported AMP dtype: {dtype_name}")
+
+
+def _build_grad_scaler(enabled):
+    if hasattr(torch, 'amp') and hasattr(torch.amp, 'GradScaler'):
+        return torch.amp.GradScaler('cuda', enabled=enabled)
+    return torch.cuda.amp.GradScaler(enabled=enabled)
+
+
 class Trainer:
     def __init__(self, model, train_loader, val_loader, test_loader=None,
                  optimizer=None, scheduler=None, device='cuda',
                  max_epochs=50, patience=10, save_dir='checkpoints',
                  spectral_lambda=0.0, target_mean=278.45, target_std=21.25,
                  wandb_run=None, wandb_run_id=None, scheduler_step_by='epoch',
-                 log_interval=50, resume_path=None, grad_accum_steps=1):
+                 log_interval=50, resume_path=None, grad_accum_steps=1,
+                 amp_enabled=False, amp_dtype='bfloat16'):
         self.model = model.to(device)
         self.train_loader = train_loader
         self.val_loader = val_loader
@@ -29,6 +46,12 @@ class Trainer:
         self.scheduler_step_by = scheduler_step_by
         self.log_interval = log_interval
         self.grad_accum_steps = max(1, int(grad_accum_steps))
+        self.device_type = str(device).split(':', maxsplit=1)[0]
+        self.amp_enabled = bool(amp_enabled and self.device_type == 'cuda')
+        self.amp_dtype = _resolve_amp_dtype(amp_dtype)
+        self.grad_scaler = _build_grad_scaler(
+            enabled=self.amp_enabled and self.amp_dtype is torch.float16
+        )
         self.start_epoch = 1
 
         os.makedirs(save_dir, exist_ok=True)
@@ -46,6 +69,15 @@ class Trainer:
             self.wandb_run.summary['config/effective_batch_size'] = (
                 int(self.train_loader.batch_size) * int(self.grad_accum_steps)
             )
+            self.wandb_run.summary['config/amp_enabled'] = self.amp_enabled
+            self.wandb_run.summary['config/amp_dtype'] = str(self.amp_dtype).replace('torch.', '')
+
+    def autocast(self):
+        return torch.autocast(
+            device_type=self.device_type,
+            dtype=self.amp_dtype,
+            enabled=self.amp_enabled,
+        )
 
     @property
     def latest_checkpoint_path(self):
@@ -105,7 +137,7 @@ class Trainer:
 
     def train_epoch(self, epoch):
         self.model.train()
-        total_loss = 0.0
+        total_loss = torch.zeros((), device=self.device)
         n_batches = len(self.train_loader)
         print(
             f"Starting epoch {epoch}/{self.max_epochs} "
@@ -113,58 +145,79 @@ class Trainer:
             flush=True,
         )
         self.optimizer.zero_grad(set_to_none=True)
+        seen_samples = 0
         for batch_idx, (lr, hr) in enumerate(self.train_loader):
             lr = lr.to(self.device, non_blocking=True)
             hr = hr.to(self.device, non_blocking=True)
-            pred = self.model(lr)
-            # Loss: MSE + optional spectral loss
-            mse = nn.functional.mse_loss(pred, hr)
+            seen_samples += lr.size(0)
+            with self.autocast():
+                pred = self.model(lr)
+
+            # Keep FFT/MSE loss math in fp32 even when model forward uses AMP.
+            pred_loss = pred.float()
+            hr_loss = hr.float()
+            mse = nn.functional.mse_loss(pred_loss, hr_loss)
             loss = mse  # spectral loss can be added later if needed
             if self.spectral_lambda > 0:
                 from losses.spectral_loss import spectral_loss
-                loss = spectral_loss(pred, hr, lambda_=self.spectral_lambda)
+                loss = spectral_loss(
+                    pred_loss,
+                    hr_loss,
+                    lambda_=self.spectral_lambda,
+                    mse=mse,
+                )
             scaled_loss = loss / self.grad_accum_steps
-            scaled_loss.backward()
+            if self.grad_scaler.is_enabled():
+                self.grad_scaler.scale(scaled_loss).backward()
+            else:
+                scaled_loss.backward()
 
             should_step = (
                 (batch_idx + 1) % self.grad_accum_steps == 0
                 or batch_idx + 1 == n_batches
             )
             if should_step:
-                self.optimizer.step()
+                if self.grad_scaler.is_enabled():
+                    self.grad_scaler.step(self.optimizer)
+                    self.grad_scaler.update()
+                else:
+                    self.optimizer.step()
                 self.optimizer.zero_grad(set_to_none=True)
                 if self.scheduler is not None and self.scheduler_step_by == 'step':
                     self.scheduler.step()
 
-            total_loss += loss.item() * lr.size(0)
+            total_loss += loss.detach() * lr.size(0)
             if (
                 self.log_interval > 0
                 and ((batch_idx + 1) % self.log_interval == 0 or batch_idx + 1 == n_batches)
             ):
-                avg_loss = total_loss / ((batch_idx + 1) * lr.size(0))
+                avg_loss = (total_loss / seen_samples).item()
                 print(
                     f"  batch {batch_idx + 1:4d}/{n_batches} | "
                     f"loss {avg_loss:.6f} | lr {self.current_lr():.3e}",
                     flush=True,
                 )
-        return total_loss / len(self.train_loader.dataset)
+        return (total_loss / len(self.train_loader.dataset)).item()
 
     @torch.no_grad()
     def validate(self):
         self.model.eval()
-        total_loss = 0.0
-        sum_sq_z = 0.0
+        total_loss = torch.zeros((), device=self.device)
+        sum_sq_z = torch.zeros((), device=self.device)
         n_values = 0
         for lr, hr in self.val_loader:
             lr = lr.to(self.device, non_blocking=True)
             hr = hr.to(self.device, non_blocking=True)
-            pred = self.model(lr)
+            with self.autocast():
+                pred = self.model(lr)
+            pred = pred.float()
+            hr = hr.float()
             loss = nn.functional.mse_loss(pred, hr)
-            total_loss += loss.item() * lr.size(0)
-            sum_sq_z += ((pred - hr) ** 2).sum().item()
+            total_loss += loss * lr.size(0)
+            sum_sq_z += ((pred - hr) ** 2).sum()
             n_values += hr.numel()
-        avg_loss = total_loss / len(self.val_loader.dataset)
-        val_rmse_z = (sum_sq_z / n_values) ** 0.5
+        avg_loss = (total_loss / len(self.val_loader.dataset)).item()
+        val_rmse_z = ((sum_sq_z / n_values) ** 0.5).item()
         val_rmse_k = val_rmse_z * self.target_std
         return avg_loss, val_rmse_k, val_rmse_z
 
@@ -186,18 +239,15 @@ class Trainer:
             current_lr = self.current_lr()
 
             if self.wandb_run is not None:
-                effective_batch_size = self.train_loader.batch_size * self.grad_accum_steps
                 self.wandb_run.log(
                     {
                         'epoch': epoch,
                         'lr': current_lr,
-                        'train/effective_batch_size': effective_batch_size,
                         'train/loss': float(train_loss),
                         'val/loss': float(val_loss),
                         'val/rmse_k': float(val_rmse_k),
                         'val/rmse_z': float(val_rmse_z),
                         'best/val_rmse_k': float(min(self.best_val_rmse, val_rmse_k)),
-                        'train/spectral_lambda': float(self.spectral_lambda),
                     },
                     step=epoch,
                     commit=True,
@@ -238,12 +288,15 @@ class Trainer:
     @torch.no_grad()
     def test(self):
         self.model.eval()
-        sum_sq_z = 0.0
+        sum_sq_z = torch.zeros((), device=self.device)
         n_values = 0
         for lr, hr in self.test_loader:
             lr = lr.to(self.device, non_blocking=True)
             hr = hr.to(self.device, non_blocking=True)
-            pred = self.model(lr)
-            sum_sq_z += ((pred - hr) ** 2).sum().item()
+            with self.autocast():
+                pred = self.model(lr)
+            pred = pred.float()
+            hr = hr.float()
+            sum_sq_z += ((pred - hr) ** 2).sum()
             n_values += hr.numel()
-        return (sum_sq_z / n_values) ** 0.5 * self.target_std
+        return ((sum_sq_z / n_values) ** 0.5).item() * self.target_std

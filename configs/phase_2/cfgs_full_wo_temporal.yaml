@@ -13,7 +13,7 @@ data:
   stride: 6
   temporal: false
   lr_preload_train: true
-  hr_preload_train: false
+  hr_preload_train: true
   lr_preload_eval: true
   hr_preload_eval: true
 
@@ -51,6 +51,11 @@ training:
   max_epochs: 100
   patience: 15
   grad_accum_steps: 2
+  tf32: true
+  float32_matmul_precision: high
+  amp:
+    enabled: true
+    dtype: bfloat16
   log_interval: 25
   save_dir: ${global_vars.output_root}/${global_vars.mode}
   optimizer:

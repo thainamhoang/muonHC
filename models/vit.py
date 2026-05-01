@@ -22,7 +22,8 @@ class TransformerBlock(nn.Module):
 
     def forward(self, x):
         # x: (B, N, dim)
-        x = x + self.attn(self.norm1(x), self.norm1(x), self.norm1(x))[0]
+        x_norm = self.norm1(x)
+        x = x + self.attn(x_norm, x_norm, x_norm, need_weights=False)[0]
         x = x + self.mlp(self.norm2(x))
         return x
 

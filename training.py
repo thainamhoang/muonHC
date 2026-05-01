@@ -19,7 +19,12 @@ from models.downscaling_model import DownscalingModel
 from utils.data import build_datasets_and_loaders
 from utils.geo import setup_geo_inr_grid
 from utils.optimizers import build_optimizer
-from utils.runtime import resolve_device, seed_everything, to_plain_container
+from utils.runtime import (
+    configure_torch_performance,
+    resolve_device,
+    seed_everything,
+    to_plain_container,
+)
 from utils.schedulers import build_scheduler
 from utils.trainer import Trainer
 from utils.wandb_utils import peek_wandb_run_id, setup_wandb
@@ -50,6 +55,7 @@ def main():
     temporal = config.data.get('temporal', False)
     in_channels = config.model.get('in_channels', 3 if temporal else 1)
     device = resolve_device(config.training.get('device', None))
+    configure_torch_performance(config.training)
     train_dataset, train_loader, val_loader, test_loader = build_datasets_and_loaders(
         config,
         device,
@@ -95,6 +101,10 @@ def main():
     # Spectral loss lambda (optional)
     spectral_lambda = get_spectral_lambda(config)
     print(f"Spectral loss lambda: {spectral_lambda}")
+    amp_cfg = config.training.get('amp', {})
+    amp_enabled = bool(amp_cfg.get('enabled', False))
+    amp_dtype = amp_cfg.get('dtype', 'bfloat16')
+    print(f"AMP enabled: {amp_enabled} ({amp_dtype})")
     resume_path = args.resume
     wandb_run_id = peek_wandb_run_id(resume_path)
     run = setup_wandb(config, run_id=wandb_run_id)
@@ -125,6 +135,8 @@ def main():
         log_interval=int(config.training.get('log_interval', 50)),
         resume_path=resume_path,
         grad_accum_steps=grad_accum_steps,
+        amp_enabled=amp_enabled,
+        amp_dtype=amp_dtype,
     )
 
     best_val_rmse = trainer.train()

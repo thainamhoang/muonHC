@@ -32,7 +32,8 @@ class TransformerBlock(nn.Module):
 
     def forward(self, x):
         # x: (B, N, dim)
-        x = x + self.attn(self.norm1(x), self.norm1(x), self.norm1(x))[0]
+        x_norm = self.norm1(x)
+        x = x + self.attn(x_norm, x_norm, x_norm, need_weights=False)[0]
         x = x + self.mlp(self.norm2(x))
         return x
 
@@ -98,10 +99,12 @@ class mHCTransformerLayer(nn.Module):
         # Apply attention + MLP to each stream independently
         processed = []
         for i in range(self.n_streams):
+            stream_norm = self.norms1[i](streams[i])
             a = streams[i] + self.attns[i](
-                self.norms1[i](streams[i]),
-                self.norms1[i](streams[i]),
-                self.norms1[i](streams[i])
+                stream_norm,
+                stream_norm,
+                stream_norm,
+                need_weights=False,
             )[0]
             m = a + self.mlps[i](self.norms2[i](a))
             processed.append(m)
