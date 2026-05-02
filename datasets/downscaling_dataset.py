@@ -5,6 +5,29 @@ import torch
 from torch.utils.data import Dataset
 
 
+def _preload_shards(shards, variable_name, partition, label):
+    """Preload shards with one final array allocation instead of list+concat."""
+    first = np.load(shards[0])[variable_name]
+    total_timesteps = first.shape[0] * len(shards)
+    data = np.empty(
+        (total_timesteps, *first.shape[1:]),
+        dtype=first.dtype,
+    )
+    cursor = 0
+    for shard_idx, shard_path in enumerate(shards):
+        shard = first if shard_idx == 0 else np.load(shard_path)[variable_name]
+        next_cursor = cursor + shard.shape[0]
+        data[cursor:next_cursor] = shard
+        cursor = next_cursor
+        if (shard_idx + 1) % 50 == 0 or shard_idx + 1 == len(shards):
+            print(
+                f"[{partition}] {label} preload progress: "
+                f"{shard_idx + 1}/{len(shards)} shards",
+                flush=True,
+            )
+    return data
+
+
 class DownscalingDataset(Dataset):
     """
     Paired (LR, HR) ERA5 downscaling dataset.
@@ -97,33 +120,43 @@ class DownscalingDataset(Dataset):
         total = self.T_per_shard * len(lr_shards)
         self.indices = list(range(0, total, stride))
 
-        print(f"[{partition}] LR shape: {self.lr_shape}, HR shape: {self.hr_shape}")
+        print(f"[{partition}] LR shape: {self.lr_shape}, HR shape: {self.hr_shape}", flush=True)
         print(
             f"[{partition}] {len(lr_shards)} shards × "
-            f"{self.T_per_shard} timesteps = {total} total"
+            f"{self.T_per_shard} timesteps = {total} total",
+            flush=True,
         )
         print(
             f"[{partition}] {len(self.indices)} samples "
             f"(stride={stride}, lr_preload={self.lr_preload}, "
-            f"hr_preload={self.hr_preload})"
+            f"hr_preload={self.hr_preload})",
+            flush=True,
         )
 
         # ── LR preload ────────────────────────────────────────────────────
         if self.lr_preload:
-            print(f"[{partition}] Preloading LR shards into RAM...")
-            lr_list = [np.load(f)["2m_temperature"] for f in lr_shards]
-            self._lr_data = np.concatenate(lr_list, axis=0)  # [T_total, 1, H_lr, W_lr]
-            print(f"[{partition}] LR preloaded: {self._lr_data.nbytes / 1e9:.2f} GB")
+            print(f"[{partition}] Preloading LR shards into RAM...", flush=True)
+            self._lr_data = _preload_shards(
+                lr_shards,
+                "2m_temperature",
+                partition,
+                "LR",
+            )
+            print(f"[{partition}] LR preloaded: {self._lr_data.nbytes / 1e9:.2f} GB", flush=True)
         else:
             self._lr_data = None
             self._cache_lr = None
 
         # ── HR preload ────────────────────────────────────────────────────
         if self.hr_preload:
-            print(f"[{partition}] Preloading HR shards into RAM...")
-            hr_list = [np.load(f)["2m_temperature"] for f in hr_shards]
-            self._hr_data = np.concatenate(hr_list, axis=0)  # [T_total, 1, H_hr, W_hr]
-            print(f"[{partition}] HR preloaded: {self._hr_data.nbytes / 1e9:.2f} GB")
+            print(f"[{partition}] Preloading HR shards into RAM...", flush=True)
+            self._hr_data = _preload_shards(
+                hr_shards,
+                "2m_temperature",
+                partition,
+                "HR",
+            )
+            print(f"[{partition}] HR preloaded: {self._hr_data.nbytes / 1e9:.2f} GB", flush=True)
         else:
             self._hr_data = None
             self._cache_hr = None

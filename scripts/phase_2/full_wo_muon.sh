@@ -43,6 +43,7 @@ else
     echo "WANDB_API_KEY loaded successfully (length: ${#WANDB_API_KEY})"
 fi
 export OMP_NUM_THREADS=1
+export PYTHONUNBUFFERED=1
 export NCCL_SOCKET_FAMILY=AF_INET
 export NCCL_IB_DISABLE=1
 export NCCL_SOCKET_IFNAME=lo
@@ -61,13 +62,9 @@ echo "Using $NUM_GPUS GPU(s): $CUDA_VISIBLE_DEVICES"
 echo "Torch rendezvous: ${MASTER_ADDR}:${MASTER_PORT}"
 
 # Launch training
-if [ "$NUM_GPUS" -eq 1 ]; then
-  python /home/thahoa/muonHC/training.py --config $CONFIG_FILE
-else
-  torchrun \
-    --nnodes=1 \
-    --nproc_per_node=$NUM_GPUS \
-    --master_addr=$MASTER_ADDR \
-    --master_port=$MASTER_PORT \
-    /home/thahoa/muonHC/training.py --config $CONFIG_FILE
-fi
+torchrun \
+  --nnodes=1 \
+  --nproc_per_node=$NUM_GPUS \
+  --master_addr=$MASTER_ADDR \
+  --master_port=$MASTER_PORT \
+  /home/thahoa/muonHC/training.py --config $CONFIG_FILE
