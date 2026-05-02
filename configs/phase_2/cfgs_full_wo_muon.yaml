@@ -10,7 +10,7 @@ global_vars:
 data:
   lr_dir: ${global_vars.data_root}/${global_vars.lr_deg}deg/${global_vars.var}
   hr_dir: ${global_vars.data_root}/${global_vars.hr_deg}deg/${global_vars.var}
-  stride: 6
+  stride: 3
   temporal: true
   lr_preload_train: true
   hr_preload_train: true
