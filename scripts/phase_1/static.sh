@@ -50,8 +50,17 @@ nvidia-smi --query-gpu=name,memory.total --format=csv
 
 # Auto-detect number of GPUs from Slurm
 NUM_GPUS=$(echo $CUDA_VISIBLE_DEVICES | tr "," "\n" | wc -l)
+export MASTER_ADDR=127.0.0.1
+export MASTER_PORT=$((10000 + ${SLURM_JOB_ID:-0} % 50000))
 
 echo "Using $NUM_GPUS GPU(s): $CUDA_VISIBLE_DEVICES"
+echo "Torch rendezvous: ${MASTER_ADDR}:${MASTER_PORT}"
 
 # Launch training
-torchrun --nproc_per_node=$NUM_GPUS /home/thahoa/muonHC/training.py --config $CONFIG_FILE
+torchrun \
+  --standalone \
+  --nnodes=1 \
+  --nproc_per_node=$NUM_GPUS \
+  --master_addr=$MASTER_ADDR \
+  --master_port=$MASTER_PORT \
+  /home/thahoa/muonHC/training.py --config $CONFIG_FILE
