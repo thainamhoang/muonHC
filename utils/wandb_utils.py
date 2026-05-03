@@ -60,6 +60,7 @@ def setup_wandb(config, run_id=None):
         id=run_id,
         resume="allow",
         mode=mode,
+        tags=wandb_cfg.get("tags", None),
         config=OmegaConf.to_container(config, resolve=True),
     )
     print(f"WandB run: {run.url if run.url else run.id}")

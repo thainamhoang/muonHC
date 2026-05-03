@@ -58,7 +58,7 @@ training:
     enabled: true
     dtype: bfloat16
   log_interval: 25
-  save_dir: ${global_vars.output_root}/${global_vars.dataset}/${global_vars.mode}_stride${data.stride}_seed${global_vars.seed}
+  save_dir: ${global_vars.output_root}/${global_vars.dataset}/${global_vars.mode}_${model.upscale}x_stride${data.stride}_seed${global_vars.seed}
   optimizer:
     type: muon_adamw
     muon_lr: 0.004
@@ -78,5 +78,8 @@ training:
 wandb:
   entity: thainamhoang
   project: muonHC
-  name: ${global_vars.dataset}_${global_vars.mode}_stride${data.stride}_seed${global_vars.seed}
+  name: ${global_vars.dataset}_${global_vars.mode}_${model.upscale}x_stride${data.stride}_seed${global_vars.seed}
+  tags:
+    - ${global_vars.dataset}
+    - ${global_vars.mode}
   watch: false
