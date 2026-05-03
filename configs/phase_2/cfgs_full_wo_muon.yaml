@@ -1,11 +1,12 @@
 global_vars:
+  dataset: era5
   data_root: /scratch/thahoa/climate/era5-climate-learn/data
   output_root: /home/thahoa/muonHC/output
   lr_deg: 5.625
   hr_deg: 1.40625
   var: 2m_temperature
-  seed: 42
-  mode: phase2_wo_muon
+  seed: 3407
+  mode: full_wo_muon
 
 data:
   lr_dir: ${global_vars.data_root}/${global_vars.lr_deg}deg/${global_vars.var}
@@ -57,7 +58,7 @@ training:
     enabled: true
     dtype: bfloat16
   log_interval: 25
-  save_dir: ${global_vars.output_root}/${global_vars.mode}
+  save_dir: ${global_vars.output_root}/${global_vars.dataset}/${global_vars.mode}_stride${data.stride}_seed${global_vars.seed}
   optimizer:
     type: adamw
     lr: 2e-4
@@ -75,5 +76,5 @@ training:
 wandb:
   entity: thainamhoang
   project: muonHC
-  name: ${global_vars.mode}_${model.backbone}_${model.upscale}x
+  name: ${global_vars.dataset}_${global_vars.mode}_stride${data.stride}_seed${global_vars.seed}
   watch: false
