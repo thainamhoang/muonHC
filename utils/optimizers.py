@@ -85,6 +85,7 @@ def build_optimizer(model, training_cfg, device=None):
         adamw_lr = float(optimizer_cfg.get("adamw_lr", 1e-4))
         adamw_wd = float(optimizer_cfg.get("adamw_weight_decay", 0.1))
         betas = tuple(optimizer_cfg.get("adamw_betas", [0.9, 0.999]))
+        eps = float(optimizer_cfg.get("adamw_eps", optimizer_cfg.get("eps", 1e-8)))
 
         optimizers = []
         if muon_params:
@@ -105,6 +106,7 @@ def build_optimizer(model, training_cfg, device=None):
                     lr=adamw_lr,
                     weight_decay=adamw_wd,
                     betas=betas,
+                    eps=eps,
                 )
             )
         if not optimizers:
@@ -116,6 +118,7 @@ def build_optimizer(model, training_cfg, device=None):
     lr = float(optimizer_cfg.get("lr", training_cfg.get("lr", 2e-4)))
     weight_decay = float(optimizer_cfg.get("weight_decay", training_cfg.get("weight_decay", 1e-4)))
     betas = tuple(optimizer_cfg.get("betas", [0.9, 0.999]))
+    eps = float(optimizer_cfg.get("eps", 1e-8))
 
     if optimizer_type == "adamw":
         return torch.optim.AdamW(
@@ -123,6 +126,7 @@ def build_optimizer(model, training_cfg, device=None):
             lr=lr,
             weight_decay=weight_decay,
             betas=betas,
+            eps=eps,
         )
     if optimizer_type == "adam":
         return torch.optim.Adam(
@@ -130,5 +134,6 @@ def build_optimizer(model, training_cfg, device=None):
             lr=lr,
             weight_decay=weight_decay,
             betas=betas,
+            eps=eps,
         )
     raise ValueError(f"Unknown optimizer type: {optimizer_type}")

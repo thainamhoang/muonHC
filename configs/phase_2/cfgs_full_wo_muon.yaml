@@ -43,6 +43,9 @@ model:
     mlp_ratio: 4
     dropout: 0.0
     sinkhorn_iters: 5
+    use_spatial_gate: false
+    gate_hidden_ratio: 0.25
+    gate_init_bias: -1.0
   geo_inr:
     n_basis: 8
     out_dim: 128
