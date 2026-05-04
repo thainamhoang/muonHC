@@ -37,6 +37,18 @@ class CombinedOptimizer(torch.optim.Optimizer):
             optimizer.load_state_dict(optimizer_state)
 
 
+def _is_muon_transformer_weight(name, param):
+    if param.ndim != 2:
+        return False
+    if not name.startswith("vit."):
+        return False
+    if ".attn." in name:
+        return name.endswith("in_proj_weight") or name.endswith("out_proj.weight")
+    if ".mlp." in name:
+        return name.endswith(".weight")
+    return False
+
+
 def build_optimizer(model, training_cfg, device=None):
     """Build optimizer supporting Muon+AdamW or single optimizers."""
     optimizer_cfg = training_cfg.get("optimizer", {})
@@ -50,14 +62,7 @@ def build_optimizer(model, training_cfg, device=None):
         for name, param in model.named_parameters():
             if not param.requires_grad:
                 continue
-            if (
-                param.ndim == 2
-                and "weight" in name
-                and "norm" not in name
-                and "embed" not in name
-                and "conv3" not in name
-                and "conv1" not in name
-            ):
+            if _is_muon_transformer_weight(name, param):
                 muon_params.append(param)
             else:
                 adamw_params.append(param)

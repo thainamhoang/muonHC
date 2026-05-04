@@ -52,8 +52,10 @@ class DownscalingModel(nn.Module):
                 middle_depth=hyperloop_kwargs.get('middle_depth', 4),
                 end_depth=hyperloop_kwargs.get('end_depth', 2),
                 K=hyperloop_kwargs.get('K', 3),
+                n_streams=hyperloop_kwargs.get('n_streams', 2),
                 mlp_ratio=hyperloop_kwargs.get('mlp_ratio', 4),
                 dropout=hyperloop_kwargs.get('dropout', 0.0),
+                sinkhorn_iters=hyperloop_kwargs.get('sinkhorn_iters', 20),
             )
         else:
             self.vit = ViTBackbone(

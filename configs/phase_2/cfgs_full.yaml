@@ -11,7 +11,7 @@ global_vars:
 data:
   lr_dir: ${global_vars.data_root}/${global_vars.lr_deg}deg/${global_vars.var}
   hr_dir: ${global_vars.data_root}/${global_vars.hr_deg}deg/${global_vars.var}
-  stride: 1
+  stride: 6
   temporal: true
   lr_preload_train: true
   hr_preload_train: true
@@ -39,8 +39,10 @@ model:
     middle_depth: 4
     end_depth: 2
     K: 3
+    n_streams: 2
     mlp_ratio: 4
     dropout: 0.0
+    sinkhorn_iters: 5
   geo_inr:
     n_basis: 8
     out_dim: 128
