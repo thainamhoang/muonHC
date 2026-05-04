@@ -83,7 +83,7 @@ def build_optimizer(model, training_cfg, device=None):
         muon_nesterov = bool(optimizer_cfg.get("muon_nesterov", True))
 
         adamw_lr = float(optimizer_cfg.get("adamw_lr", 1e-4))
-        adamw_wd = float(optimizer_cfg.get("adamw_weight_decay", 0.1))
+        adamw_wd = float(optimizer_cfg.get("adamw_weight_decay", 0.01))
         betas = tuple(optimizer_cfg.get("adamw_betas", [0.9, 0.999]))
         eps = float(optimizer_cfg.get("adamw_eps", optimizer_cfg.get("eps", 1e-8)))
 
