@@ -321,6 +321,7 @@ class Trainer:
                 hr,
                 mean=target_mean,
                 std=target_std,
+                crop_border=1,
                 reduction="sum",
             )
             n_samples += hr.size(0)

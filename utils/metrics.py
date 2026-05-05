@@ -34,23 +34,29 @@ def bias_kelvin(pred_z, target_z, mean=278.45, std=21.25):
 
 
 def log_frequency_distance(pred_z, target_z, mean=278.45, std=21.25,
-                           eps=1e-12, reduction="mean"):
+                           crop_border=1, reduction="mean"):
     """Log Frequency Distance in Kelvin.
 
     Inputs are expected in z-score space with shape (B, C, H, W) or
-    (B, H, W). LFD is computed per sample as log(mean squared FFT error)
-    over channels and spatial frequencies, then reduced across the batch.
+    (B, H, W). LFD follows the GeoFAR/Focal Frequency Loss style:
+    unnormalized full FFT, optional frequency-border crop, and log1p of the
+    per-sample mean squared complex frequency error.
     """
     mean = _broadcast_stat(mean, pred_z)
     std = _broadcast_stat(std, pred_z)
     pred = pred_z * std + mean
     target = target_z * std + mean
 
-    pred_fft = torch.fft.rfft2(pred, dim=(-2, -1), norm="ortho")
-    target_fft = torch.fft.rfft2(target, dim=(-2, -1), norm="ortho")
-    fft_sq_error = (pred_fft - target_fft).abs().square()
+    pred_fft = torch.fft.fft2(pred.float(), dim=(-2, -1))
+    target_fft = torch.fft.fft2(target.float(), dim=(-2, -1))
+    if crop_border:
+        pred_fft = pred_fft[..., crop_border:-crop_border, crop_border:-crop_border]
+        target_fft = target_fft[..., crop_border:-crop_border, crop_border:-crop_border]
+
+    diff = pred_fft - target_fft
+    fft_sq_error = diff.real.square() + diff.imag.square()
     reduce_dims = tuple(range(1, fft_sq_error.ndim))
-    per_sample = torch.log(fft_sq_error.mean(dim=reduce_dims).clamp_min(eps))
+    per_sample = torch.log1p(fft_sq_error.mean(dim=reduce_dims))
 
     if reduction == "none":
         return per_sample
