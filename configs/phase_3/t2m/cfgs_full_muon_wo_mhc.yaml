@@ -6,8 +6,8 @@ global_vars:
   hr_deg: 1.40625
   var: 2m_temperature
   var_short: t2m
-  seed: 42
-  mode: full
+  seed: 2026
+  mode: full_muon_wo_mhc
 
 data:
   lr_dir: ${global_vars.data_root}/${global_vars.lr_deg}deg/${global_vars.var}
@@ -34,19 +34,8 @@ model:
   num_heads: 4
   upscale: 4
   decoder_hidden_dim: 256
-  backbone: hyperloop_mhc
-  hyperloop:
-    begin_depth: 2
-    middle_depth: 4
-    end_depth: 2
-    K: 3
-    n_streams: 2
-    mlp_ratio: 4
-    dropout: 0.0
-    sinkhorn_iters: 5
-    use_spatial_gate: false
-    gate_hidden_ratio: 0.25
-    gate_init_bias: -1.0
+  backbone: vit
+  depth: 16
   geo_inr:
     n_basis: 8
     out_dim: 128
@@ -70,13 +59,17 @@ training:
     muon_lr: 0.004
     muon_weight_decay: 0.05
     muon_momentum: 0.95
-    adamw_lr: 1e-4
-    adamw_weight_decay: 0.1
+    muon_ns_steps: 5
+    muon_nesterov: true
+    adamw_lr: 1.0e-4
+    adamw_weight_decay: 0.01
+    adamw_betas: [0.9, 0.95]
+    adamw_eps: 1.0e-8
   scheduler:
     type: warmup_cosine
     warmup_epochs: 10
     warmup_start_factor: 0.01
-    eta_min: 1e-6
+    min_lr: 1.0e-6
     step_by: step
   loss:
     spectral_lambda: 0.1

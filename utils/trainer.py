@@ -4,6 +4,8 @@ import os
 import torch
 import torch.nn as nn
 
+from utils.metrics import log_frequency_distance
+
 
 def _resolve_amp_dtype(dtype_name):
     dtype_name = str(dtype_name).lower()
@@ -61,6 +63,7 @@ class Trainer:
         self.train_losses = []
         self.val_losses = []
         self.val_rmses_k = []
+        self.test_metrics = {}
         if resume_path is not None:
             self.load_checkpoint(resume_path)
         if self.wandb_run is not None:
@@ -278,18 +281,32 @@ class Trainer:
             self.wandb_run.summary['best/val_rmse_k'] = float(self.best_val_rmse)
         # Optional test evaluation
         if self.test_loader is not None:
-            test_rmse = self.test()
-            print(f"Test RMSE: {test_rmse:.4f} K")
+            test_metrics = self.test()
+            print(
+                f"Test RMSE: {test_metrics['rmse_k']:.4f} K | "
+                f"Test LFD: {test_metrics['lfd']:.4f}"
+            )
             if self.wandb_run is not None:
-                self.wandb_run.log({'test/rmse_k': float(test_rmse)}, commit=True)
-                self.wandb_run.summary['test/rmse_k'] = float(test_rmse)
+                self.wandb_run.log(
+                    {
+                        'test/rmse_k': float(test_metrics['rmse_k']),
+                        'test/rmse_z': float(test_metrics['rmse_z']),
+                        'test/lfd': float(test_metrics['lfd']),
+                    },
+                    commit=True,
+                )
+                for name, value in test_metrics.items():
+                    self.wandb_run.summary[f'test/{name}'] = float(value)
         return self.best_val_rmse
 
     @torch.no_grad()
     def test(self):
         self.model.eval()
         sum_sq_z = torch.zeros((), device=self.device)
+        lfd_sum = torch.zeros((), device=self.device)
         n_values = 0
+        n_samples = 0
+        target_mean, target_std = self._test_target_stats()
         for lr, hr in self.test_loader:
             lr = lr.to(self.device, non_blocking=True)
             hr = hr.to(self.device, non_blocking=True)
@@ -299,4 +316,26 @@ class Trainer:
             hr = hr.float()
             sum_sq_z += ((pred - hr) ** 2).sum()
             n_values += hr.numel()
-        return ((sum_sq_z / n_values) ** 0.5).item() * self.target_std
+            lfd_sum += log_frequency_distance(
+                pred,
+                hr,
+                mean=target_mean,
+                std=target_std,
+                reduction="sum",
+            )
+            n_samples += hr.size(0)
+
+        rmse_z = ((sum_sq_z / n_values) ** 0.5).item()
+        metrics = {
+            'rmse_k': rmse_z * self.target_std,
+            'rmse_z': rmse_z,
+            'lfd': (lfd_sum / n_samples).item(),
+        }
+        self.test_metrics = metrics
+        return metrics
+
+    def _test_target_stats(self):
+        dataset = getattr(self.test_loader, 'dataset', None)
+        target_mean = getattr(dataset, 'hr_mean', self.target_mean)
+        target_std = getattr(dataset, 'hr_std', self.target_std)
+        return target_mean, target_std

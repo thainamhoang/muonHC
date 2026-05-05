@@ -1,13 +1,13 @@
 global_vars:
   dataset: era5
-  opt_config: m3
   data_root: /scratch/thahoa/climate/era5-climate-learn/data
   output_root: /home/thahoa/muonHC/output
   lr_deg: 5.625
   hr_deg: 1.40625
   var: 2m_temperature
-  seed: 42
-  mode: muon_${global_vars.opt_config}
+  var_short: t2m
+  seed: 2026
+  mode: full_muon
 
 data:
   lr_dir: ${global_vars.data_root}/${global_vars.lr_deg}deg/${global_vars.var}
@@ -64,19 +64,23 @@ training:
     enabled: true
     dtype: bfloat16
   log_interval: 25
-  save_dir: ${global_vars.output_root}/${global_vars.dataset}/${global_vars.mode}_${model.upscale}x_stride${data.stride}_seed${global_vars.seed}
+  save_dir: ${global_vars.output_root}/${global_vars.dataset}/${global_vars.dataset}_${global_vars.var_short}_${global_vars.mode}_${model.upscale}x_stride${data.stride}_seed${global_vars.seed}
   optimizer:
     type: muon_adamw
     muon_lr: 0.004
-    muon_weight_decay: 0.01
+    muon_weight_decay: 0.05
     muon_momentum: 0.95
-    adamw_lr: 1e-4
+    muon_ns_steps: 5
+    muon_nesterov: true
+    adamw_lr: 1.0e-4
     adamw_weight_decay: 0.01
+    adamw_betas: [0.9, 0.95]
+    adamw_eps: 1.0e-8
   scheduler:
     type: warmup_cosine
-    warmup_epochs: 5
+    warmup_epochs: 10
     warmup_start_factor: 0.01
-    eta_min: 1e-6
+    min_lr: 1.0e-6
     step_by: step
   loss:
     spectral_lambda: 0.1
@@ -84,8 +88,9 @@ training:
 wandb:
   entity: thainamhoang
   project: muonHC
-  name: ${global_vars.dataset}_${global_vars.mode}_${model.upscale}x_stride${data.stride}_seed${global_vars.seed}
+  name: ${global_vars.dataset}_${global_vars.var_short}_${global_vars.mode}_${model.upscale}x_stride${data.stride}_seed${global_vars.seed}
   tags:
     - ${global_vars.dataset}
-    - muon_opt
+    - ${global_vars.mode}
+    - ${global_vars.var}
   watch: false
