@@ -3,6 +3,7 @@ import glob
 import numpy as np
 import torch
 from torch.utils.data import Dataset
+from bisect import bisect_right
 
 
 def _as_hw(value):
@@ -18,7 +19,11 @@ def _as_hw(value):
 def _preload_shards(shards, variable_name, partition, label):
     """Preload shards with one final array allocation instead of list+concat."""
     first = _load_npz_array(shards[0], variable_name)
-    total_timesteps = first.shape[0] * len(shards)
+    shard_lengths = [first.shape[0]]
+    for shard_path in shards[1:]:
+        shard = _load_npz_array(shard_path, variable_name)
+        shard_lengths.append(shard.shape[0])
+    total_timesteps = sum(shard_lengths)
     data = np.empty(
         (total_timesteps, *first.shape[1:]),
         dtype=first.dtype,
@@ -36,6 +41,17 @@ def _preload_shards(shards, variable_name, partition, label):
                 flush=True,
             )
     return data
+
+
+def _shard_lengths(shards, variable_name):
+    return [_load_npz_array(path, variable_name).shape[0] for path in shards]
+
+
+def _offsets_from_lengths(lengths):
+    offsets = [0]
+    for length in lengths:
+        offsets.append(offsets[-1] + int(length))
+    return offsets
 
 
 def _load_npz_array(path, variable_name):
@@ -162,8 +178,18 @@ class DownscalingDataset(Dataset):
                 )
             self.sample_lr_shape = self.lr_crop_size
             self.sample_hr_shape = hr_crop
+        self.lr_shard_lengths = _shard_lengths(lr_shards, variable_name)
+        self.hr_shard_lengths = _shard_lengths(hr_shards, variable_name)
+        if self.lr_shard_lengths != self.hr_shard_lengths:
+            raise ValueError(
+                "LR/HR shard timestep mismatch. "
+                f"LR lengths={self.lr_shard_lengths[:10]}, "
+                f"HR lengths={self.hr_shard_lengths[:10]}"
+            )
+        self.shard_lengths = self.lr_shard_lengths
+        self.shard_offsets = _offsets_from_lengths(self.shard_lengths)
         self.T_per_shard = first_lr.shape[0]
-        total = self.T_per_shard * len(lr_shards)
+        total = self.shard_offsets[-1]
         self.indices = list(range(0, total, stride))
 
         print(f"[{partition}] LR shape: {self.lr_shape}, HR shape: {self.hr_shape}", flush=True)
@@ -175,8 +201,9 @@ class DownscalingDataset(Dataset):
                 flush=True,
             )
         print(
-            f"[{partition}] {len(lr_shards)} shards × "
-            f"{self.T_per_shard} timesteps = {total} total",
+            f"[{partition}] {len(lr_shards)} shards, "
+            f"timesteps/shard min={min(self.shard_lengths)}, "
+            f"max={max(self.shard_lengths)}, total={total}",
             flush=True,
         )
         print(
@@ -233,8 +260,7 @@ class DownscalingDataset(Dataset):
             (F, F) — both from shard cache (original lazy behaviour)
         """
         real_idx = self.indices[idx]
-        shard_idx = real_idx // self.T_per_shard
-        t_idx = real_idx % self.T_per_shard
+        shard_idx, t_idx = self._locate_real_idx(real_idx)
 
         # ── LR ────────────────────────────────────────────────────────────
         if self.lr_preload:
@@ -265,6 +291,12 @@ class DownscalingDataset(Dataset):
 
         return lr, hr
 
+    def _locate_real_idx(self, real_idx: int):
+        shard_idx = bisect_right(self.shard_offsets, real_idx) - 1
+        if shard_idx < 0 or shard_idx >= len(self.shard_lengths):
+            raise IndexError(f"Index {real_idx} out of range for total={self.shard_offsets[-1]}")
+        return shard_idx, real_idx - self.shard_offsets[shard_idx]
+
     def _crop_pair(self, lr, hr):
         if self.lr_crop_size is None:
             return lr, hr
@@ -289,8 +321,7 @@ class DownscalingDataset(Dataset):
         return lr, hr
 
     def _get_lr_raw_by_real_idx(self, real_idx: int):
-        shard_idx = real_idx // self.T_per_shard
-        t_idx = real_idx % self.T_per_shard
+        shard_idx, t_idx = self._locate_real_idx(real_idx)
         if self.lr_preload:
             return self._lr_data[real_idx]
         if not hasattr(self, "_cache_lr_shard_idx"):
@@ -314,7 +345,7 @@ class DownscalingDataset(Dataset):
         # ── Z-score normalize ─────────────────────────────────────────────
         if self.temporal:
             real_idx = self.indices[idx]
-            total = self.T_per_shard * len(self.lr_shards)
+            total = self.shard_offsets[-1]
             prev_idx = max(0, real_idx - 1)
             next_idx = min(total - 1, real_idx + 1)
             lr_prev = torch.from_numpy(self._get_lr_raw_by_real_idx(prev_idx)).to(dtype=torch.float32)

@@ -21,7 +21,7 @@ data:
 
 dataloader:
   batch_size: 1
-  train_shuffle:c true
+  train_shuffle: true
   num_workers: 4
   pin_memory: true
   persistent_workers: true
