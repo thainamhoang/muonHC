@@ -10,7 +10,7 @@ import argparse
 import os
 import sys
 
-PROJECT_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+PROJECT_DIR = os.path.abspath(os.path.dirname(__file__))
 if PROJECT_DIR not in sys.path:
     sys.path.insert(0, PROJECT_DIR)
 
@@ -250,6 +250,12 @@ def _analytic_counts_from_config(config, lr_shape, hr_shape):
     pos_embed = embed_dim * grid_h * grid_w
     norm = 2 * embed_dim
 
+    counts = {
+        "fck": 0,
+        "vit.patch_embed": patch_embed,
+        "vit.pos_embed": pos_embed,
+    }
+
     if backbone == "hyperloop_mhc":
         hyperloop = config.model.hyperloop
         begin_depth = int(hyperloop.get("begin_depth", 2))
@@ -267,6 +273,16 @@ def _analytic_counts_from_config(config, lr_shape, hr_shape):
         else:
             loop_hyper += n_streams
         loop_pos = loops * embed_dim
+        counts.update(
+            {
+                "vit.begin_transformer": begin_depth * block_params,
+                "vit.middle_transformer": middle_depth * block_params,
+                "vit.mhc": loop_hyper,
+                "vit.loop_pos_embed": loop_pos,
+                "vit.end_transformer": end_depth * block_params,
+                "vit.norm": norm,
+            }
+        )
         backbone_params = (
             patch_embed
             + pos_embed
@@ -277,6 +293,12 @@ def _analytic_counts_from_config(config, lr_shape, hr_shape):
         )
     else:
         depth = int(config.model.get("depth", 8))
+        counts.update(
+            {
+                "vit.transformer_blocks": depth * block_params,
+                "vit.norm": norm,
+            }
+        )
         backbone_params = patch_embed + pos_embed + depth * block_params + norm
 
     decoder_hidden_dim = int(config.model.decoder_hidden_dim)
@@ -301,13 +323,68 @@ def _analytic_counts_from_config(config, lr_shape, hr_shape):
         geo_params = geo_in * hidden_dim + hidden_dim
         geo_params += hidden_dim * (out_dim * 2) + (out_dim * 2)
 
-    counts = {
-        "fck": 0,
-        "vit": backbone_params,
-        "geo_inr": geo_params,
-        "decoder": decoder_params,
-    }
-    counts["total"] = sum(counts.values())
+    counts["vit"] = backbone_params
+    counts["geo_inr"] = geo_params
+    if geo_params:
+        counts["geo_inr.mlp"] = geo_params
+    counts["decoder.conv1"] = _conv2d_params(embed_dim, decoder_mid, 1)
+    counts["decoder.conv2"] = _conv2d_params(decoder_hidden_dim, decoder_hidden_dim, 3)
+    counts["decoder.conv3"] = _conv2d_params(decoder_hidden_dim, 1, 3)
+    counts["decoder"] = decoder_params
+    counts["total"] = counts["fck"] + counts["vit"] + counts["geo_inr"] + counts["decoder"]
+    return counts
+
+
+def _count_parameter(parameter, trainable_only=True):
+    if trainable_only and not parameter.requires_grad:
+        return 0
+    return parameter.numel()
+
+
+def _component_counts_from_model(model, trainable_only=True):
+    counts = {}
+
+    def add_module(name, module):
+        if module is not None:
+            counts[name] = count_params(module, trainable_only=trainable_only)
+
+    def add_parameter(name, parameter):
+        if parameter is not None:
+            counts[name] = _count_parameter(parameter, trainable_only=trainable_only)
+
+    add_module("fck", getattr(model, "fck", None))
+
+    vit = getattr(model, "vit", None)
+    if vit is not None:
+        add_module("vit", vit)
+        add_module("vit.patch_embed", getattr(vit, "patch_embed", None))
+        add_parameter("vit.pos_embed", getattr(vit, "pos_embed", None))
+
+        if hasattr(vit, "blocks"):
+            add_module("vit.transformer_blocks", vit.blocks)
+            add_module("vit.norm", getattr(vit, "norm", None))
+        else:
+            add_module("vit.begin_transformer", getattr(vit, "begin", None))
+            middle = getattr(vit, "middle", None)
+            if middle is not None:
+                add_module("vit.middle_transformer", getattr(middle, "middle", None))
+                add_module("vit.mhc", getattr(middle, "hyper", None))
+                add_parameter("vit.loop_pos_embed", getattr(middle, "loop_pos_embed", None))
+            add_module("vit.end_transformer", getattr(vit, "end", None))
+            add_module("vit.norm", getattr(vit, "norm_out", None))
+
+    geo_inr = getattr(model, "geo_inr", None)
+    if geo_inr is not None:
+        add_module("geo_inr", geo_inr)
+        add_module("geo_inr.mlp", getattr(geo_inr, "mlp", None))
+
+    decoder = getattr(model, "decoder", None)
+    if decoder is not None:
+        add_module("decoder", decoder)
+        for name in ("conv1", "conv2", "conv3"):
+            add_module(f"decoder.{name}", getattr(decoder, name, None))
+
+    counts["total"] = count_params(model, trainable_only=trainable_only)
     return counts
 
 
@@ -339,8 +416,9 @@ def _collect_row(path, lr_shape, hr_shape, trainable_only):
     model = None
     if DownscalingModel is not None:
         model = _build_model_from_config(config, lr_shape=lr_shape, hr_shape=hr_shape)
-        total_params = count_params(model, trainable_only=trainable_only)
-        backbone_params = count_params(model.vit, trainable_only=trainable_only)
+        counts = _component_counts_from_model(model, trainable_only=trainable_only)
+        total_params = counts["total"]
+        backbone_params = counts["vit"]
     else:
         if not trainable_only:
             raise RuntimeError("--all-params requires torch so frozen FCK weights can be instantiated")
@@ -377,27 +455,52 @@ def _print_table(rows):
 
 
 def _print_breakdown(row):
-    model = row["model"]
-    if model is None:
-        counts = row["counts"]
-        total = counts["total"]
-        print(f"\nBreakdown: {row['name']}")
-        for name in ("fck", "vit", "geo_inr", "decoder"):
-            params = counts.get(name, 0)
-            if params == 0 and name == "geo_inr":
-                continue
-            print(f"  {name:<8}: {params:>14,} ({params / total:.2%})")
-        print(f"  total   : {total:>14,}")
-        return
+    counts = row["counts"]
+    total = counts["total"]
+    backbone_total = counts.get("vit", 0)
 
-    total = count_params(model)
     print(f"\nBreakdown: {row['name']}")
-    for name in ("fck", "vit", "geo_inr", "decoder"):
-        module = getattr(model, name, None)
-        if module is None:
+
+    top_level = ("fck", "vit", "geo_inr", "decoder")
+    detail_keys = (
+        "vit.patch_embed",
+        "vit.pos_embed",
+        "vit.transformer_blocks",
+        "vit.begin_transformer",
+        "vit.middle_transformer",
+        "vit.mhc",
+        "vit.loop_pos_embed",
+        "vit.end_transformer",
+        "vit.norm",
+        "geo_inr.mlp",
+        "decoder.conv1",
+        "decoder.conv2",
+        "decoder.conv3",
+    )
+
+    for name in top_level:
+        params = counts.get(name, 0)
+        if params == 0 and name == "geo_inr":
             continue
-        params = count_params(module)
         print(f"  {name:<8}: {params:>14,} ({params / total:.2%})")
+
+    print("  components:")
+    for name in detail_keys:
+        params = counts.get(name, None)
+        if params is None:
+            continue
+        if params == 0 and name.startswith("geo_inr"):
+            continue
+        share_total = params / total if total else 0.0
+        if name.startswith("vit.") and backbone_total:
+            share_backbone = params / backbone_total
+            print(
+                f"    {name:<24} {params:>14,} "
+                f"({share_total:.2%} full, {share_backbone:.2%} backbone)"
+            )
+        else:
+            print(f"    {name:<24} {params:>14,} ({share_total:.2%} full)")
+
     print(f"  total   : {total:>14,}")
 
 
@@ -407,7 +510,9 @@ def main():
     parser.add_argument("--lr-shape", type=_shape_arg, default=(32, 64), help="LR shape as H,W")
     parser.add_argument("--hr-shape", type=_shape_arg, default=(128, 256), help="HR shape as H,W")
     parser.add_argument("--all-params", action="store_true", help="Count frozen parameters too")
+    parser.set_defaults(breakdown=True)
     parser.add_argument("--breakdown", action="store_true", help="Print component shares per model")
+    parser.add_argument("--no-breakdown", action="store_false", dest="breakdown", help="Only print the compact comparison table")
     args = parser.parse_args()
 
     trainable_only = not args.all_params
