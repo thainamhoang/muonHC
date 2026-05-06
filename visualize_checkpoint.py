@@ -53,7 +53,9 @@ def radial_frequency_grid(height, width, device):
 
 
 def radial_spectrum(x, n_bins=64):
-    spectrum = torch.fft.fft2(x.float(), dim=(-2, -1)).abs().square()
+    x = x.float()
+    x = x - x.mean(dim=(-2, -1), keepdim=True)
+    spectrum = torch.log1p(torch.fft.fft2(x, dim=(-2, -1)).abs())
     radius = radial_frequency_grid(x.shape[-2], x.shape[-1], x.device)
     bin_idx = torch.clamp((radius * n_bins).long(), max=n_bins - 1).flatten()
     values = spectrum.reshape(-1, x.shape[-2] * x.shape[-1])
@@ -94,7 +96,16 @@ def laplacian(x):
         dtype=x.dtype,
     ).view(1, 1, 3, 3)
     kernel = kernel.expand(channels, 1, 3, 3)
-    return F.conv2d(x, kernel, padding=1, groups=channels)
+    x = F.pad(x, (1, 1, 1, 1), mode="reflect")
+    return F.conv2d(x, kernel, padding=0, groups=channels)
+
+
+def robust_abs_limit(images, quantile=0.995):
+    values = torch.cat([image.detach().abs().flatten() for image in images])
+    values = values[torch.isfinite(values)]
+    if values.numel() == 0:
+        return 1e-6
+    return max(float(torch.quantile(values, quantile)), 1e-6)
 
 
 def collect_predictions(model, loader, device, max_batches, amp_enabled, amp_dtype):
@@ -127,13 +138,25 @@ def save_radial_spectra(pred, target, output_dir, n_bins):
     pred_spec = radial_spectrum(pred, n_bins=n_bins).cpu()
     target_spec = radial_spectrum(target, n_bins=n_bins).cpu()
     x = torch.linspace(0.0, 1.0, n_bins)
+    spectrum_error = (pred_spec - target_spec).abs()
+
+    csv_path = os.path.join(output_dir, "radial_spectrum.csv")
+    with open(csv_path, "w", encoding="utf-8", newline="") as f:
+        writer = csv.writer(f)
+        writer.writerow(["normalized_radial_frequency", "gt", "prediction", "abs_error"])
+        for freq, gt_value, pred_value, err_value in zip(
+            x.tolist(),
+            target_spec.tolist(),
+            pred_spec.tolist(),
+            spectrum_error.tolist(),
+        ):
+            writer.writerow([freq, gt_value, pred_value, err_value])
 
     plt.figure(figsize=(7.0, 4.5))
-    plt.plot(x, target_spec.clamp_min(1e-12), label="GT", linewidth=2.0)
-    plt.plot(x, pred_spec.clamp_min(1e-12), label="Prediction", linewidth=2.0)
-    plt.yscale("log")
+    plt.plot(x, target_spec, label="GT", linewidth=2.0)
+    plt.plot(x, pred_spec, label="Prediction", linewidth=2.0)
     plt.xlabel("Normalized radial frequency")
-    plt.ylabel("Average power spectrum")
+    plt.ylabel("Mean log(1 + Fourier magnitude)")
     plt.title("Radial Spectrum: GT vs Prediction")
     plt.grid(alpha=0.25)
     plt.legend()
@@ -141,7 +164,18 @@ def save_radial_spectra(pred, target, output_dir, n_bins):
     path = os.path.join(output_dir, "radial_spectrum_gt_vs_pred.png")
     plt.savefig(path, dpi=180)
     plt.close()
-    return path
+
+    plt.figure(figsize=(7.0, 4.5))
+    plt.plot(x, spectrum_error, linewidth=2.0, color="#d62728")
+    plt.xlabel("Normalized radial frequency")
+    plt.ylabel("|Prediction spectrum - GT spectrum|")
+    plt.title("Radial Spectrum Error")
+    plt.grid(alpha=0.25)
+    plt.tight_layout()
+    error_path = os.path.join(output_dir, "radial_spectrum_error.png")
+    plt.savefig(error_path, dpi=180)
+    plt.close()
+    return path, error_path, csv_path, float(spectrum_error.nanmean())
 
 
 def save_band_rmse(pred, target, output_dir):
@@ -183,14 +217,15 @@ def save_laplacian_maps(pred, target, output_dir, sample_index, channel):
         ("Laplacian(pred)", pred_lap[0, channel]),
         ("abs error", err[0, channel]),
     ]
-    vmax = max(float(panels[0][1].abs().max()), float(panels[1][1].abs().max()), 1e-6)
+    signed_vmax = robust_abs_limit([panels[0][1], panels[1][1]])
+    err_vmax = robust_abs_limit([panels[2][1]])
 
     fig, axes = plt.subplots(1, 3, figsize=(13.5, 4.0), constrained_layout=True)
     for ax, (title, image) in zip(axes, panels):
         if title == "abs error":
-            im = ax.imshow(image.cpu(), cmap="magma")
+            im = ax.imshow(image.cpu(), cmap="magma", vmin=0.0, vmax=err_vmax)
         else:
-            im = ax.imshow(image.cpu(), cmap="coolwarm", vmin=-vmax, vmax=vmax)
+            im = ax.imshow(image.cpu(), cmap="coolwarm", vmin=-signed_vmax, vmax=signed_vmax)
         ax.set_title(title)
         ax.set_axis_off()
         fig.colorbar(im, ax=ax, fraction=0.046, pad=0.04)
@@ -248,7 +283,12 @@ def main():
         amp_dtype=amp_cfg.get("dtype", "bfloat16"),
     )
 
-    spectra_path = save_radial_spectra(pred, target, args.output_dir, args.n_bins)
+    spectra_path, spectrum_error_path, spectrum_csv, radial_spectrum_l1 = save_radial_spectra(
+        pred,
+        target,
+        args.output_dir,
+        args.n_bins,
+    )
     band_metrics, band_json, band_csv, band_png = save_band_rmse(pred, target, args.output_dir)
     lap_path = save_laplacian_maps(
         pred,
@@ -259,6 +299,8 @@ def main():
     )
 
     print(f"Saved radial spectra : {spectra_path}")
+    print(f"Saved spectrum error : {spectrum_error_path}")
+    print(f"Saved spectrum CSV   : {spectrum_csv}")
     print(f"Saved band RMSE plot : {band_png}")
     print(f"Saved band RMSE JSON : {band_json}")
     print(f"Saved band RMSE CSV  : {band_csv}")
@@ -266,6 +308,7 @@ def main():
     print("Band RMSE:")
     for band, value in band_metrics.items():
         print(f"  {band}: {value:.6f}")
+    print(f"Radial spectrum L1: {radial_spectrum_l1:.6f}")
 
 
 if __name__ == "__main__":
