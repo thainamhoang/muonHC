@@ -39,6 +39,15 @@ def _resolve_amp_dtype(dtype_name):
     raise ValueError(f"Unsupported AMP dtype: {dtype_name}")
 
 
+def configure_eval_backend(disable_cudnn=False):
+    if disable_cudnn:
+        torch.backends.cudnn.enabled = False
+        print("cuDNN disabled for eval.", flush=True)
+        return
+    torch.backends.cudnn.benchmark = True
+    torch.backends.cudnn.deterministic = False
+
+
 def _make_test_loader(config, device, batch_size=None, num_workers=None):
     loader_cfg = config.get("dataloader", {})
     batch_size = int(batch_size or loader_cfg.get("batch_size", 32))
@@ -182,12 +191,16 @@ def main():
     parser.add_argument("--device", default=None, help="Override device, e.g. cuda or cuda:0.")
     parser.add_argument("--batch-size", type=int, default=None, help="Override test batch size.")
     parser.add_argument("--num-workers", type=int, default=None, help="Override test dataloader workers.")
+    parser.add_argument("--amp", action="store_true", help="Enable eval autocast using config dtype.")
+    parser.add_argument("--no-amp", action="store_true", help="Disable eval autocast.")
+    parser.add_argument("--disable-cudnn", action="store_true", help="Disable cuDNN for eval fallback.")
     args = parser.parse_args()
 
     config = OmegaConf.load(args.config)
     seed_everything(int(config.training.get("seed", 42)))
     device = resolve_device(args.device or config.training.get("device", None))
     configure_torch_performance(config.training)
+    configure_eval_backend(disable_cudnn=args.disable_cudnn)
 
     print(f"Config     : {args.config}", flush=True)
     print(f"Checkpoint : {args.checkpoint}", flush=True)
@@ -203,11 +216,12 @@ def main():
     _load_model_state(model, args.checkpoint, device=device)
 
     amp_cfg = config.training.get("amp", {})
+    amp_enabled = bool(args.amp and not args.no_amp)
     metrics = evaluate(
         model,
         test_loader,
         device=device,
-        amp_enabled=bool(amp_cfg.get("enabled", False)),
+        amp_enabled=amp_enabled,
         amp_dtype=amp_cfg.get("dtype", "bfloat16"),
     )
 
