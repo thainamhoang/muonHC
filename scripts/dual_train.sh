@@ -5,7 +5,7 @@
 #SBATCH --time=24:00:00
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=16
-#SBATCH --mem=64G
+#SBATCH --mem=128G
 #SBATCH --gpus=H200:1
 
 set -euo pipefail
@@ -70,6 +70,9 @@ echo "  CUDA_VISIBLE_DEVICES: ${CUDA_VISIBLE_DEVICES:-unset}"
 echo "  OMP_NUM_THREADS per run: $OMP_NUM_THREADS"
 echo "  rendezvous 1: ${MASTER_ADDR}:${MASTER_PORT_1}"
 echo "  rendezvous 2: ${MASTER_ADDR}:${MASTER_PORT_2}"
+echo "  requested RAM: 128G"
+echo "Note: dual runs duplicate dataset preload memory. If both configs use"
+echo "      hr_preload_train=true, 64G is usually not enough."
 
 cleanup() {
     if [ -n "${PID_1:-}" ] && kill -0 "$PID_1" 2>/dev/null; then

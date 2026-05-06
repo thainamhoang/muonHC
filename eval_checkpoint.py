@@ -117,6 +117,11 @@ def _stat_to_device(value, reference):
     return torch.as_tensor(value, device=reference.device, dtype=reference.dtype)
 
 
+def climatelearn_rmse(pred, target):
+    per_channel = (pred - target).square().mean(dim=(2, 3)).sqrt().mean(dim=0)
+    return per_channel.mean()
+
+
 @torch.no_grad()
 def evaluate(model, loader, device, amp_enabled=False, amp_dtype="bfloat16"):
     model.eval()
@@ -130,6 +135,7 @@ def evaluate(model, loader, device, amp_enabled=False, amp_dtype="bfloat16"):
 
     sum_sq_z = torch.zeros((), device=device)
     sum_sq_k = torch.zeros((), device=device)
+    cl_rmse_sum = torch.zeros((), device=device)
     lfd_sum = torch.zeros((), device=device)
     n_values = 0
     n_samples = 0
@@ -149,6 +155,7 @@ def evaluate(model, loader, device, amp_enabled=False, amp_dtype="bfloat16"):
 
         sum_sq_z += (pred - hr).square().sum()
         sum_sq_k += (pred_k - hr_k).square().sum()
+        cl_rmse_sum += climatelearn_rmse(pred_k, hr_k) * hr.size(0)
         lfd_sum += log_frequency_distance(
             pred,
             hr,
@@ -163,6 +170,7 @@ def evaluate(model, loader, device, amp_enabled=False, amp_dtype="bfloat16"):
     return {
         "rmse_k": (sum_sq_k / n_values).sqrt().item(),
         "rmse_z": (sum_sq_z / n_values).sqrt().item(),
+        "cl_rmse": (cl_rmse_sum / n_samples).item(),
         "lfd": (lfd_sum / n_samples).item(),
     }
 
@@ -205,6 +213,7 @@ def main():
 
     print(f"test/rmse_k: {metrics['rmse_k']:.6f}")
     print(f"test/rmse_z: {metrics['rmse_z']:.6f}")
+    print(f"test/cl_rmse: {metrics['cl_rmse']:.6f}")
     print(f"test/lfd   : {metrics['lfd']:.6f}")
 
 

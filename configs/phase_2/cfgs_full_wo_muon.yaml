@@ -64,7 +64,7 @@ training:
     enabled: true
     dtype: bfloat16
   log_interval: 25
-  save_dir: ${global_vars.output_root}/${global_vars.dataset}/${global_vars.dataset}_${global_vars.var_short}_${global_vars.mode}_${model.upscale}x_stride${data.stride}_seed${global_vars.seed}
+  save_dir: ${global_vars.output_root}/${global_vars.dataset}/${global_vars.var_short}_${global_vars.mode}_${model.upscale}x_stride${data.stride}_seed${global_vars.seed}
   optimizer:
     type: adamw
     lr: 2e-4
