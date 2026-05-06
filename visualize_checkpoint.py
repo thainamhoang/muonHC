@@ -95,9 +95,9 @@ def radial_spectrum(x, n_bins=64):
 def band_masks(height, width, device):
     radius = radial_frequency_grid(height, width, device)
     return {
-        "low": radius < 1.0 / 3.0,
-        "mid": (radius >= 1.0 / 3.0) & (radius < 2.0 / 3.0),
-        "high": radius >= 2.0 / 3.0,
+        "low": radius < 0.15,
+        "mid": (radius >= 0.15) & (radius < 0.50),
+        "high": radius >= 0.50,
     }
 
 
@@ -112,6 +112,32 @@ def band_limited_rmse(pred, target):
         target_band = torch.fft.ifft2(target_fft * mask, dim=(-2, -1)).real
         metrics[name] = (pred_band - target_band).square().mean().sqrt()
     return metrics
+
+
+def relative_band_rmse(pred, target, eps=1e-8):
+    pred_fft = torch.fft.fft2(pred.float(), dim=(-2, -1))
+    target_fft = torch.fft.fft2(target.float(), dim=(-2, -1))
+    masks = band_masks(pred.shape[-2], pred.shape[-1], pred.device)
+    metrics = {}
+    for name, mask in masks.items():
+        mask = mask[None, None]
+        pred_band = torch.fft.ifft2(pred_fft * mask, dim=(-2, -1)).real
+        target_band = torch.fft.ifft2(target_fft * mask, dim=(-2, -1)).real
+        numerator = (pred_band - target_band).square().mean(dim=(-2, -1)).sqrt()
+        denominator = target_band.square().mean(dim=(-2, -1)).sqrt().clamp_min(eps)
+        metrics[name] = (numerator / denominator).mean()
+    return metrics
+
+
+def high_frequency_energy_ratio(x, high_cut=0.50, eps=1e-8):
+    x = x.float()
+    x = x - x.mean(dim=(-2, -1), keepdim=True)
+    magnitude = torch.fft.fft2(x, dim=(-2, -1)).abs()
+    radius = radial_frequency_grid(x.shape[-2], x.shape[-1], x.device)
+    high_mask = radius >= high_cut
+    high_energy = magnitude[..., high_mask].sum(dim=-1)
+    total_energy = magnitude.flatten(start_dim=-2).sum(dim=-1).clamp_min(eps)
+    return high_energy / total_energy
 
 
 def laplacian(x):
@@ -232,6 +258,63 @@ def save_band_rmse(pred, target, output_dir):
     plt.title("Low / Mid / High Frequency RMSE")
     plt.tight_layout()
     png_path = os.path.join(output_dir, "band_rmse.png")
+    plt.savefig(png_path, dpi=180)
+    plt.close()
+    return metrics, json_path, csv_path, png_path
+
+
+def save_relative_band_rmse(pred, target, output_dir):
+    metrics = {name: float(value.cpu()) for name, value in relative_band_rmse(pred, target).items()}
+
+    json_path = os.path.join(output_dir, "relative_band_rmse.json")
+    with open(json_path, "w", encoding="utf-8") as f:
+        json.dump(metrics, f, indent=2)
+
+    csv_path = os.path.join(output_dir, "relative_band_rmse.csv")
+    with open(csv_path, "w", encoding="utf-8", newline="") as f:
+        writer = csv.writer(f)
+        writer.writerow(["band", "relative_rmse"])
+        for band, value in metrics.items():
+            writer.writerow([band, value])
+
+    plt.figure(figsize=(5.8, 4.0))
+    plt.bar(metrics.keys(), metrics.values(), color=["#4c78a8", "#f58518", "#e45756"])
+    plt.ylabel("Relative band RMSE")
+    plt.title("Relative Low / Mid / High Frequency Error")
+    plt.tight_layout()
+    png_path = os.path.join(output_dir, "relative_band_rmse.png")
+    plt.savefig(png_path, dpi=180)
+    plt.close()
+    return metrics, json_path, csv_path, png_path
+
+
+def save_high_frequency_energy_ratio(pred, target, output_dir):
+    pred_ratio = high_frequency_energy_ratio(pred).mean()
+    target_ratio = high_frequency_energy_ratio(target).mean()
+    pred_over_gt = pred_ratio / target_ratio.clamp_min(1e-8)
+    metrics = {
+        "prediction": float(pred_ratio.cpu()),
+        "gt": float(target_ratio.cpu()),
+        "prediction_over_gt": float(pred_over_gt.cpu()),
+    }
+
+    json_path = os.path.join(output_dir, "high_frequency_energy_ratio.json")
+    with open(json_path, "w", encoding="utf-8") as f:
+        json.dump(metrics, f, indent=2)
+
+    csv_path = os.path.join(output_dir, "high_frequency_energy_ratio.csv")
+    with open(csv_path, "w", encoding="utf-8", newline="") as f:
+        writer = csv.writer(f)
+        writer.writerow(["quantity", "value"])
+        for key, value in metrics.items():
+            writer.writerow([key, value])
+
+    plt.figure(figsize=(5.8, 4.0))
+    plt.bar(["GT", "Prediction"], [metrics["gt"], metrics["prediction"]], color=["#4c78a8", "#f58518"])
+    plt.ylabel("High-frequency energy ratio")
+    plt.title(f"High-Frequency Energy Ratio (Pred / GT = {metrics['prediction_over_gt']:.3f})")
+    plt.tight_layout()
+    png_path = os.path.join(output_dir, "high_frequency_energy_ratio.png")
     plt.savefig(png_path, dpi=180)
     plt.close()
     return metrics, json_path, csv_path, png_path
@@ -373,6 +456,16 @@ def main():
         args.n_bins,
     )
     band_metrics, band_json, band_csv, band_png = save_band_rmse(pred, target, args.output_dir)
+    rel_band_metrics, rel_band_json, rel_band_csv, rel_band_png = save_relative_band_rmse(
+        pred,
+        target,
+        args.output_dir,
+    )
+    hf_energy_metrics, hf_energy_json, hf_energy_csv, hf_energy_png = save_high_frequency_energy_ratio(
+        pred,
+        target,
+        args.output_dir,
+    )
     lap_path = save_laplacian_maps(
         pred,
         target,
@@ -397,11 +490,24 @@ def main():
     print(f"Saved band RMSE plot : {band_png}")
     print(f"Saved band RMSE JSON : {band_json}")
     print(f"Saved band RMSE CSV  : {band_csv}")
+    print(f"Saved relative band  : {rel_band_png}")
+    print(f"Saved relative JSON  : {rel_band_json}")
+    print(f"Saved relative CSV   : {rel_band_csv}")
+    print(f"Saved high-freq plot : {hf_energy_png}")
+    print(f"Saved high-freq JSON : {hf_energy_json}")
+    print(f"Saved high-freq CSV  : {hf_energy_csv}")
     print(f"Saved Laplacian maps : {lap_path}")
     print(f"Saved Laplacian bias : {lap_bias_path}")
     print("Band RMSE:")
     for band, value in band_metrics.items():
         print(f"  {band}: {value:.6f}")
+    print("Relative band RMSE:")
+    for band, value in rel_band_metrics.items():
+        print(f"  {band}: {value:.6f}")
+    print("High-frequency energy ratio:")
+    print(f"  gt: {hf_energy_metrics['gt']:.6f}")
+    print(f"  prediction: {hf_energy_metrics['prediction']:.6f}")
+    print(f"  prediction_over_gt: {hf_energy_metrics['prediction_over_gt']:.6f}")
     print(f"Radial spectrum L1: {radial_spectrum_l1:.6f}")
 
 
