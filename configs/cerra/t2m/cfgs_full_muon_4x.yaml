@@ -1,6 +1,6 @@
 global_vars:
   dataset: cerra
-  data_root: /scratch/thahoa/climate/cerra/data
+  data_root: /scratch/thahoa/climate/cerra-climate-learn/data
   output_root: /home/thahoa/muonHC/output
   lr_res: 44km
   hr_res: 11km
@@ -21,7 +21,7 @@ data:
 
 dataloader:
   batch_size: 1
-  train_shuffle: true
+  train_shuffle:c true
   num_workers: 4
   pin_memory: true
   persistent_workers: true
