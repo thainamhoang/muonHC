@@ -2,8 +2,8 @@ global_vars:
   dataset: cerra
   data_root: /scratch/thahoa/climate/cerra-climate-learn/data
   output_root: /home/thahoa/muonHC/output
-  lr_res: 44km
-  hr_res: 11km
+  lr_res: 22km
+  hr_res: 5.5km
   var: 2m_temperature
   var_short: t2m
   seed: 42
@@ -20,7 +20,7 @@ data:
   hr_preload_eval: true
 
 dataloader:
-  batch_size: 32
+  batch_size: 16
   train_shuffle: true
   num_workers: 12
   pin_memory: true
@@ -30,14 +30,14 @@ dataloader:
 model:
   n_coeff: 64
   in_channels: 3
-  img_size: [534, 534]
+  img_size: [1068, 1068]
   input_upsample: hr
-  output_size: [534, 534]
-  patch_size: 6
+  output_size: [1068, 1068]
+  patch_size: 12
   embed_dim: 128
   num_heads: 4
   upscale: 4
-  decoder_upscale: 6
+  decoder_upscale: 12
   decoder_hidden_dim: 256
   backbone: hyperloop_mhc
   hyperloop:

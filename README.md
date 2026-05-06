@@ -100,7 +100,7 @@ Results are saved to `outputs/static_baseline` and `outputs/temporal`.
 - Begin block: 2 standard layers  
 - Middle block: 4 mHC layers (2 parallel streams, doubly stochastic mixing) looped `K=3` times → effective depth 16, unique depth 8.  
 - End block: 2 standard layers  
-Total unique parameters ~40 % less than a depth‑16 standard ViT.
+This gives depth-16 effective Transformer computation with only 8 unique Transformer layers. Report the backbone-only parameter reduction against the depth-matched ViT-16 baseline, and report full-model parameter reduction separately after counting FCK, Geo-INR, decoder, and embedding parameters.
 
 **Baseline:** a standard ViT with depth 16, matched hidden dimensions.
 
