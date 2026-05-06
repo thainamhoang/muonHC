@@ -7,7 +7,7 @@ global_vars:
   var: 2m_temperature
   var_short: t2m
   seed: 42
-  mode: full_muon_radial001
+  mode: full_muon_spectral005_radial0001
 
 data:
   lr_dir: ${global_vars.data_root}/${global_vars.lr_deg}deg/${global_vars.var}
