@@ -38,6 +38,8 @@ def build_datasets_and_loaders(config, device):
         "var",
         config.get("global_vars", {}).get("var", "2m_temperature"),
     )
+    lr_crop_size = config.data.get("lr_crop_size", None)
+    upscale = int(config.model.get("upscale", 4))
 
     print(f"LR directory : {lr_dir}")
     print(f"HR directory : {hr_dir}")
@@ -52,6 +54,9 @@ def build_datasets_and_loaders(config, device):
         lr_preload=bool(config.data.get("lr_preload_train", True)),
         hr_preload=bool(config.data.get("hr_preload_train", False)),
         variable_name=variable_name,
+        lr_crop_size=lr_crop_size,
+        random_crop=bool(config.data.get("random_crop_train", False)),
+        upscale=upscale,
     )
     val_dataset = DownscalingDataset(
         lr_dir=lr_dir,
@@ -62,6 +67,9 @@ def build_datasets_and_loaders(config, device):
         lr_preload=bool(config.data.get("lr_preload_eval", True)),
         hr_preload=bool(config.data.get("hr_preload_eval", True)),
         variable_name=variable_name,
+        lr_crop_size=lr_crop_size,
+        random_crop=bool(config.data.get("random_crop_eval", False)),
+        upscale=upscale,
     )
     test_dataset = DownscalingDataset(
         lr_dir=lr_dir,
@@ -72,6 +80,9 @@ def build_datasets_and_loaders(config, device):
         lr_preload=bool(config.data.get("lr_preload_eval", True)),
         hr_preload=bool(config.data.get("hr_preload_eval", True)),
         variable_name=variable_name,
+        lr_crop_size=lr_crop_size,
+        random_crop=bool(config.data.get("random_crop_eval", False)),
+        upscale=upscale,
     )
 
     train_loader = _make_loader(

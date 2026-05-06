@@ -230,7 +230,12 @@ def main():
         batch_size=args.batch_size,
         num_workers=args.num_workers,
     )
-    model = _build_model(config, device=device, hr_shape=dataset.hr_shape)
+    model = _build_model(
+        config,
+        device=device,
+        lr_shape=dataset.sample_lr_shape,
+        hr_shape=dataset.sample_hr_shape,
+    )
     _load_model_state(model, args.checkpoint, device=device)
 
     amp_cfg = config.training.get("amp", {})

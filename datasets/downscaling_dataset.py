@@ -5,6 +5,16 @@ import torch
 from torch.utils.data import Dataset
 
 
+def _as_hw(value):
+    if value is None:
+        return None
+    if isinstance(value, int):
+        return (value, value)
+    if len(value) != 2:
+        raise ValueError(f"Expected crop size as int or [H, W], got {value}")
+    return (int(value[0]), int(value[1]))
+
+
 def _preload_shards(shards, variable_name, partition, label):
     """Preload shards with one final array allocation instead of list+concat."""
     first = _load_npz_array(shards[0], variable_name)
@@ -80,11 +90,17 @@ class DownscalingDataset(Dataset):
         lr_preload: bool = False,
         hr_preload: bool = False,
         variable_name: str = "2m_temperature",
+        lr_crop_size=None,
+        random_crop: bool = False,
+        upscale: int = 4,
     ):
         self.stride = stride
         self.partition = partition
         self.temporal = temporal
         self.variable_name = variable_name
+        self.lr_crop_size = _as_hw(lr_crop_size)
+        self.random_crop = bool(random_crop)
+        self.upscale = int(upscale)
 
         # Resolve per-resolution preload flags
         # Explicit lr_preload / hr_preload take priority over legacy preload
@@ -130,11 +146,34 @@ class DownscalingDataset(Dataset):
         first_hr = _load_npz_array(hr_shards[0], variable_name)
         self.lr_shape = first_lr.shape[2:]  # [T, 1, H_lr, W_lr] → (H_lr, W_lr)
         self.hr_shape = first_hr.shape[2:]
+        self.sample_lr_shape = self.lr_shape
+        self.sample_hr_shape = self.hr_shape
+        if self.lr_crop_size is not None:
+            crop_h, crop_w = self.lr_crop_size
+            if crop_h > self.lr_shape[0] or crop_w > self.lr_shape[1]:
+                raise ValueError(
+                    f"LR crop {self.lr_crop_size} exceeds LR shape {self.lr_shape}"
+                )
+            hr_crop = (crop_h * self.upscale, crop_w * self.upscale)
+            if hr_crop[0] > self.hr_shape[0] or hr_crop[1] > self.hr_shape[1]:
+                raise ValueError(
+                    f"HR crop {hr_crop} from LR crop {self.lr_crop_size} "
+                    f"and upscale={self.upscale} exceeds HR shape {self.hr_shape}"
+                )
+            self.sample_lr_shape = self.lr_crop_size
+            self.sample_hr_shape = hr_crop
         self.T_per_shard = first_lr.shape[0]
         total = self.T_per_shard * len(lr_shards)
         self.indices = list(range(0, total, stride))
 
         print(f"[{partition}] LR shape: {self.lr_shape}, HR shape: {self.hr_shape}", flush=True)
+        if self.lr_crop_size is not None:
+            print(
+                f"[{partition}] Crop: LR {self.sample_lr_shape} -> "
+                f"HR {self.sample_hr_shape} "
+                f"(random_crop={self.random_crop}, upscale={self.upscale})",
+                flush=True,
+            )
         print(
             f"[{partition}] {len(lr_shards)} shards × "
             f"{self.T_per_shard} timesteps = {total} total",
@@ -226,6 +265,29 @@ class DownscalingDataset(Dataset):
 
         return lr, hr
 
+    def _crop_pair(self, lr, hr):
+        if self.lr_crop_size is None:
+            return lr, hr
+
+        crop_h, crop_w = self.lr_crop_size
+        max_i = self.lr_shape[0] - crop_h
+        max_j = self.lr_shape[1] - crop_w
+        if self.random_crop:
+            i = int(torch.randint(0, max_i + 1, ()).item()) if max_i > 0 else 0
+            j = int(torch.randint(0, max_j + 1, ()).item()) if max_j > 0 else 0
+        else:
+            i = max_i // 2
+            j = max_j // 2
+
+        hi = i * self.upscale
+        hj = j * self.upscale
+        hr_crop_h = crop_h * self.upscale
+        hr_crop_w = crop_w * self.upscale
+
+        lr = lr[..., i:i + crop_h, j:j + crop_w]
+        hr = hr[..., hi:hi + hr_crop_h, hj:hj + hr_crop_w]
+        return lr, hr
+
     def _get_lr_raw_by_real_idx(self, real_idx: int):
         shard_idx = real_idx // self.T_per_shard
         t_idx = real_idx % self.T_per_shard
@@ -269,7 +331,7 @@ class DownscalingDataset(Dataset):
             lr_norm = (lr_raw - self.lr_mean) * self.lr_inv_std
         hr_norm = (hr_raw - self.hr_mean) * self.hr_inv_std
 
-        return lr_norm, hr_norm
+        return self._crop_pair(lr_norm, hr_norm)
 
     # ── Worker init ───────────────────────────────────────────────────────
 

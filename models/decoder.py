@@ -2,6 +2,7 @@
 
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 
 def init_conv_decoder(module):
     """Initialize final conv layer with zeros."""
@@ -56,6 +57,9 @@ class FiLMDecoder(nn.Module):
         x = self.conv1(x)
         x = self.pixel_shuffle(x)
         if gamma is not None and beta is not None:
+            if gamma.shape[-2:] != x.shape[-2:]:
+                gamma = F.interpolate(gamma, size=x.shape[-2:], mode="bilinear", align_corners=False)
+                beta = F.interpolate(beta, size=x.shape[-2:], mode="bilinear", align_corners=False)
             x = (1.0 + gamma) * x + beta
         x = self.gelu(x)
         x = self.conv2(x)

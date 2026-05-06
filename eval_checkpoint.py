@@ -69,6 +69,9 @@ def _make_test_loader(config, device, batch_size=None, num_workers=None):
         lr_preload=bool(config.data.get("lr_preload_eval", True)),
         hr_preload=bool(config.data.get("hr_preload_eval", True)),
         variable_name=variable_name,
+        lr_crop_size=config.data.get("lr_crop_size", None),
+        random_crop=bool(config.data.get("random_crop_eval", False)),
+        upscale=int(config.model.get("upscale", 4)),
     )
 
     kwargs = {
@@ -86,7 +89,20 @@ def _make_test_loader(config, device, batch_size=None, num_workers=None):
     return dataset, DataLoader(dataset, **kwargs)
 
 
-def _build_model(config, device, hr_shape):
+def resolve_size_agnostic_model_shapes(config, lr_shape, hr_shape):
+    output_size = tuple(config.model.get("output_size", hr_shape))
+    input_upsample = config.model.get("input_upsample", None)
+    if isinstance(input_upsample, str):
+        input_upsample_size = output_size if input_upsample.lower() == "hr" else None
+    elif input_upsample:
+        input_upsample_size = output_size
+    else:
+        input_upsample_size = None
+    img_size = tuple(config.model.get("img_size", input_upsample_size or lr_shape))
+    return img_size, input_upsample_size, output_size
+
+
+def _build_model(config, device, lr_shape, hr_shape):
     temporal = bool(config.data.get("temporal", False))
     in_channels = int(config.model.get("in_channels", 3 if temporal else 1))
     hyperloop_kwargs = to_plain_container(config.model.get("hyperloop", None))
@@ -95,6 +111,11 @@ def _build_model(config, device, hr_shape):
 
     if geo_inr_args is not None:
         geo_inr_args["out_dim"] = decoder_hidden_dim
+    img_size, input_upsample_size, output_size = resolve_size_agnostic_model_shapes(
+        config,
+        lr_shape,
+        hr_shape,
+    )
 
     model = DownscalingModel(
         in_channels=in_channels,
@@ -107,6 +128,11 @@ def _build_model(config, device, hr_shape):
         backbone=config.model.get("backbone", "vit"),
         hyperloop_kwargs=hyperloop_kwargs,
         geo_inr_args=geo_inr_args,
+        img_size=img_size,
+        patch_size=int(config.model.get("patch_size", 1)),
+        decoder_upscale=config.model.get("decoder_upscale", None),
+        input_upsample_size=input_upsample_size,
+        output_size=output_size,
     ).to(device)
     setup_geo_inr_grid(model, config.data.hr_dir, hr_shape, device)
     return model
@@ -212,7 +238,12 @@ def main():
         batch_size=args.batch_size,
         num_workers=args.num_workers,
     )
-    model = _build_model(config, device=device, hr_shape=test_dataset.hr_shape)
+    model = _build_model(
+        config,
+        device=device,
+        lr_shape=test_dataset.sample_lr_shape,
+        hr_shape=test_dataset.sample_hr_shape,
+    )
     _load_model_state(model, args.checkpoint, device=device)
 
     amp_cfg = config.training.get("amp", {})

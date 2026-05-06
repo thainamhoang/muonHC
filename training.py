@@ -38,6 +38,19 @@ def get_spectral_lambda(config):
     return 0.0
 
 
+def resolve_size_agnostic_model_shapes(config, lr_shape, hr_shape):
+    output_size = tuple(config.model.get('output_size', hr_shape))
+    input_upsample = config.model.get('input_upsample', None)
+    if isinstance(input_upsample, str):
+        input_upsample_size = output_size if input_upsample.lower() == 'hr' else None
+    elif input_upsample:
+        input_upsample_size = output_size
+    else:
+        input_upsample_size = None
+    img_size = tuple(config.model.get('img_size', input_upsample_size or lr_shape))
+    return img_size, input_upsample_size, output_size
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('--config', type=str, required=True, help='Path to YAML/OmegaConf config')
@@ -70,6 +83,11 @@ def main():
     hyperloop_kwargs = to_plain_container(config.model.get('hyperloop', None))
     geo_inr_args = to_plain_container(config.model.get('geo_inr', None))
     decoder_hidden_dim = int(config.model.decoder_hidden_dim)
+    img_size, input_upsample_size, output_size = resolve_size_agnostic_model_shapes(
+        config,
+        train_dataset.sample_lr_shape,
+        train_dataset.sample_hr_shape,
+    )
     if geo_inr_args is not None:
         geo_inr_out_dim = geo_inr_args.get('out_dim', decoder_hidden_dim)
         if geo_inr_out_dim != decoder_hidden_dim:
@@ -90,10 +108,15 @@ def main():
         backbone=config.model.get('backbone', 'vit'),
         hyperloop_kwargs=hyperloop_kwargs,
         geo_inr_args=geo_inr_args,
+        img_size=img_size,
+        patch_size=int(config.model.get('patch_size', 1)),
+        decoder_upscale=config.model.get('decoder_upscale', None),
+        input_upsample_size=input_upsample_size,
+        output_size=output_size,
     )
     print("Model built.", flush=True)
     print("Setting GeoINR grid if enabled...", flush=True)
-    setup_geo_inr_grid(model, config.data.hr_dir, train_dataset.hr_shape, device)
+    setup_geo_inr_grid(model, config.data.hr_dir, train_dataset.sample_hr_shape, device)
     print("GeoINR setup complete.", flush=True)
 
     total_epochs = config.training.max_epochs

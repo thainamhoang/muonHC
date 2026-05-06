@@ -277,20 +277,29 @@ class HyperloopViT(nn.Module):
         use_spatial_gate=False,
         gate_hidden_ratio=0.25,
         gate_init_bias=-1.0,
+        patch_size=1,
     ):
         super().__init__()
         H, W = img_size
+        if H % patch_size != 0 or W % patch_size != 0:
+            raise ValueError(
+                f"patch_size={patch_size} must divide img_size={img_size}"
+            )
         self.img_size = img_size
         self.embed_dim = embed_dim
         self.n_streams = n_streams
         self.use_spatial_gate = use_spatial_gate
+        self.patch_size = patch_size
+        grid_h = H // patch_size
+        grid_w = W // patch_size
 
         self.patch_embed = nn.Conv2d(
             in_channels=in_channels,
             out_channels=embed_dim,
-            kernel_size=1,
+            kernel_size=patch_size,
+            stride=patch_size,
         )
-        self.pos_embed = nn.Parameter(torch.randn(1, embed_dim, H, W) * 0.02)
+        self.pos_embed = nn.Parameter(torch.randn(1, embed_dim, grid_h, grid_w) * 0.02)
 
         self.begin = nn.ModuleList(
             [
@@ -350,6 +359,7 @@ class HyperloopViT(nn.Module):
         _, _, H, W = x.shape
         x = self.patch_embed(x)
         x = self._add_pos_embed(x)
+        H, W = x.shape[-2:]
         x = x.flatten(2).transpose(1, 2)
 
         for block in self.begin:
@@ -402,6 +412,7 @@ def hyperloop_vit_tiny(
     in_channels,
     img_size=(32, 64),
     use_spatial_gate=False,
+    patch_size=1,
 ):
     """Tiny Hyperloop-mHC ViT with 8 unique layers and 16 effective passes."""
     return HyperloopViT(
@@ -420,4 +431,5 @@ def hyperloop_vit_tiny(
         use_spatial_gate=use_spatial_gate,
         gate_hidden_ratio=0.25,
         gate_init_bias=-1.0,
+        patch_size=patch_size,
     )

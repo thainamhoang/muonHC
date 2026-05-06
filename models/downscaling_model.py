@@ -5,6 +5,7 @@ GeoINR FiLM is applied after the decoder's pixel-shuffle upsampling.
 """
 
 import torch.nn as nn
+import torch.nn.functional as F
 from .fck import LocalDCTConv
 from .vit import ViTBackbone
 from .hyperloop_mhc import HyperloopViT
@@ -28,7 +29,9 @@ class DownscalingModel(nn.Module):
     """
     def __init__(self, in_channels, n_coeff=64, embed_dim=128, depth=8, num_heads=4,
                  upscale=4, decoder_hidden_dim=256, backbone='vit',
-                 hyperloop_kwargs=None, geo_inr_args=None):
+                 hyperloop_kwargs=None, geo_inr_args=None, img_size=(32, 64),
+                 patch_size=1, decoder_upscale=None, input_upsample_size=None,
+                 output_size=None):
         super().__init__()
         n_side = int(n_coeff ** 0.5)
         if n_side * n_side != n_coeff:
@@ -40,12 +43,19 @@ class DownscalingModel(nn.Module):
 
         # Backbone
         self.backbone_type = backbone
+        self.img_size = tuple(img_size)
+        self.patch_size = int(patch_size)
+        self.input_upsample_size = (
+            tuple(input_upsample_size) if input_upsample_size is not None else None
+        )
+        self.output_size = tuple(output_size) if output_size is not None else None
+        decoder_upscale = int(decoder_upscale or (upscale * self.patch_size))
         if backbone == 'hyperloop_mhc':
             if hyperloop_kwargs is None:
                 hyperloop_kwargs = {}
             self.vit = HyperloopViT(
                 in_channels=vit_in_channels,
-                img_size=(32, 64),
+                img_size=self.img_size,
                 embed_dim=embed_dim,
                 num_heads=num_heads,
                 begin_depth=hyperloop_kwargs.get('begin_depth', 2),
@@ -59,11 +69,12 @@ class DownscalingModel(nn.Module):
                 use_spatial_gate=hyperloop_kwargs.get('use_spatial_gate', False),
                 gate_hidden_ratio=hyperloop_kwargs.get('gate_hidden_ratio', 0.25),
                 gate_init_bias=hyperloop_kwargs.get('gate_init_bias', -1.0),
+                patch_size=self.patch_size,
             )
         else:
             self.vit = ViTBackbone(
-                vit_in_channels, img_size=(32, 64),
-                embed_dim=embed_dim, depth=depth, num_heads=num_heads, patch_size=1,
+                vit_in_channels, img_size=self.img_size,
+                embed_dim=embed_dim, depth=depth, num_heads=num_heads, patch_size=self.patch_size,
             )
 
         # GeoINR (optional)
@@ -73,7 +84,7 @@ class DownscalingModel(nn.Module):
             self.geo_inr = GeoINR(**geo_inr_args)
 
         # Decoder with FiLM support
-        self.decoder = FiLMDecoder(embed_dim, upscale=upscale, hidden_dim=decoder_hidden_dim)
+        self.decoder = FiLMDecoder(embed_dim, upscale=decoder_upscale, hidden_dim=decoder_hidden_dim)
 
     def forward(self, x_lr):
         """
@@ -82,7 +93,15 @@ class DownscalingModel(nn.Module):
         Returns:
             (B, 1, 128, 256) HR prediction
         """
-        f = self.fck(x_lr)                    # (B, C*n_coeff, 32, 64)
+        if self.input_upsample_size is not None and x_lr.shape[-2:] != self.input_upsample_size:
+            x_lr = F.interpolate(
+                x_lr,
+                size=self.input_upsample_size,
+                mode="bilinear",
+                align_corners=False,
+            )
+
+        f = self.fck(x_lr)                    # (B, C*n_coeff, H, W)
         feat_map = self.vit(f)                # (B, embed_dim, 32, 64)
 
         if self.geo_inr is not None:
@@ -90,6 +109,15 @@ class DownscalingModel(nn.Module):
             # Broadcast to batch
             gamma = gamma.expand(feat_map.size(0), -1, -1, -1)
             beta = beta.expand(feat_map.size(0), -1, -1, -1)
-            return self.decoder(feat_map, gamma, beta)
+            out = self.decoder(feat_map, gamma, beta)
         else:
-            return self.decoder(feat_map)
+            out = self.decoder(feat_map)
+
+        if self.output_size is not None and out.shape[-2:] != self.output_size:
+            out = F.interpolate(
+                out,
+                size=self.output_size,
+                mode="bilinear",
+                align_corners=False,
+            )
+        return out
