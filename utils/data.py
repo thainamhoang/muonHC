@@ -34,9 +34,14 @@ def build_datasets_and_loaders(config, device):
     prefetch_factor = loader_cfg.get("prefetch_factor", None)
     lr_dir = config.data.lr_dir
     hr_dir = config.data.hr_dir
+    variable_name = config.data.get(
+        "var",
+        config.get("global_vars", {}).get("var", "2m_temperature"),
+    )
 
     print(f"LR directory : {lr_dir}")
     print(f"HR directory : {hr_dir}")
+    print(f"Variable     : {variable_name}")
 
     train_dataset = DownscalingDataset(
         lr_dir=lr_dir,
@@ -46,6 +51,7 @@ def build_datasets_and_loaders(config, device):
         stride=config.data.stride,
         lr_preload=bool(config.data.get("lr_preload_train", True)),
         hr_preload=bool(config.data.get("hr_preload_train", False)),
+        variable_name=variable_name,
     )
     val_dataset = DownscalingDataset(
         lr_dir=lr_dir,
@@ -55,6 +61,7 @@ def build_datasets_and_loaders(config, device):
         stride=config.data.stride,
         lr_preload=bool(config.data.get("lr_preload_eval", True)),
         hr_preload=bool(config.data.get("hr_preload_eval", True)),
+        variable_name=variable_name,
     )
     test_dataset = DownscalingDataset(
         lr_dir=lr_dir,
@@ -64,6 +71,7 @@ def build_datasets_and_loaders(config, device):
         stride=config.data.stride,
         lr_preload=bool(config.data.get("lr_preload_eval", True)),
         hr_preload=bool(config.data.get("hr_preload_eval", True)),
+        variable_name=variable_name,
     )
 
     train_loader = _make_loader(

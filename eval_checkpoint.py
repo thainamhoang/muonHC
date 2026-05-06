@@ -46,6 +46,10 @@ def _make_test_loader(config, device, batch_size=None, num_workers=None):
     pin_memory = bool(loader_cfg.get("pin_memory", str(device).startswith("cuda")))
     persistent_workers = bool(loader_cfg.get("persistent_workers", False)) if num_workers > 0 else False
     prefetch_factor = loader_cfg.get("prefetch_factor", None)
+    variable_name = config.data.get(
+        "var",
+        config.get("global_vars", {}).get("var", "2m_temperature"),
+    )
 
     dataset = DownscalingDataset(
         lr_dir=config.data.lr_dir,
@@ -55,6 +59,7 @@ def _make_test_loader(config, device, batch_size=None, num_workers=None):
         stride=int(config.data.stride),
         lr_preload=bool(config.data.get("lr_preload_eval", True)),
         hr_preload=bool(config.data.get("hr_preload_eval", True)),
+        variable_name=variable_name,
     )
 
     kwargs = {

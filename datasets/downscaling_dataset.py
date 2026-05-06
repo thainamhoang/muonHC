@@ -7,7 +7,7 @@ from torch.utils.data import Dataset
 
 def _preload_shards(shards, variable_name, partition, label):
     """Preload shards with one final array allocation instead of list+concat."""
-    first = np.load(shards[0])[variable_name]
+    first = _load_npz_array(shards[0], variable_name)
     total_timesteps = first.shape[0] * len(shards)
     data = np.empty(
         (total_timesteps, *first.shape[1:]),
@@ -15,7 +15,7 @@ def _preload_shards(shards, variable_name, partition, label):
     )
     cursor = 0
     for shard_idx, shard_path in enumerate(shards):
-        shard = first if shard_idx == 0 else np.load(shard_path)[variable_name]
+        shard = first if shard_idx == 0 else _load_npz_array(shard_path, variable_name)
         next_cursor = cursor + shard.shape[0]
         data[cursor:next_cursor] = shard
         cursor = next_cursor
@@ -26,6 +26,19 @@ def _preload_shards(shards, variable_name, partition, label):
                 flush=True,
             )
     return data
+
+
+def _load_npz_array(path, variable_name):
+    archive = np.load(path)
+    if variable_name in archive:
+        return archive[variable_name]
+    keys = list(archive.keys())
+    if len(keys) == 1:
+        return archive[keys[0]]
+    raise KeyError(
+        f"{variable_name!r} is not a file in {path}. "
+        f"Available keys: {keys}"
+    )
 
 
 class DownscalingDataset(Dataset):
@@ -66,10 +79,12 @@ class DownscalingDataset(Dataset):
         temporal: bool = False,
         lr_preload: bool = False,
         hr_preload: bool = False,
+        variable_name: str = "2m_temperature",
     ):
         self.stride = stride
         self.partition = partition
         self.temporal = temporal
+        self.variable_name = variable_name
 
         # Resolve per-resolution preload flags
         # Explicit lr_preload / hr_preload take priority over legacy preload
@@ -77,22 +92,21 @@ class DownscalingDataset(Dataset):
         self.hr_preload = hr_preload if hr_preload is not None else False
 
         # ── Normalization stats ───────────────────────────────────────────
-        lr_mean_f = np.load(os.path.join(lr_dir, "normalize_mean.npz"))
-        lr_std_f = np.load(os.path.join(lr_dir, "normalize_std.npz"))
-        hr_mean_f = np.load(os.path.join(hr_dir, "normalize_mean.npz"))
-        hr_std_f = np.load(os.path.join(hr_dir, "normalize_std.npz"))
-
         self.lr_mean = torch.tensor(
-            lr_mean_f["2m_temperature"], dtype=torch.float32
+            _load_npz_array(os.path.join(lr_dir, "normalize_mean.npz"), variable_name),
+            dtype=torch.float32,
         ).view(1, 1, 1)
         self.lr_std = torch.tensor(
-            lr_std_f["2m_temperature"], dtype=torch.float32
+            _load_npz_array(os.path.join(lr_dir, "normalize_std.npz"), variable_name),
+            dtype=torch.float32,
         ).view(1, 1, 1)
         self.hr_mean = torch.tensor(
-            hr_mean_f["2m_temperature"], dtype=torch.float32
+            _load_npz_array(os.path.join(hr_dir, "normalize_mean.npz"), variable_name),
+            dtype=torch.float32,
         ).view(1, 1, 1)
         self.hr_std = torch.tensor(
-            hr_std_f["2m_temperature"], dtype=torch.float32
+            _load_npz_array(os.path.join(hr_dir, "normalize_std.npz"), variable_name),
+            dtype=torch.float32,
         ).view(1, 1, 1)
         self.lr_inv_std = 1.0 / (self.lr_std + self.EPS)
         self.hr_inv_std = 1.0 / (self.hr_std + self.EPS)
@@ -112,8 +126,8 @@ class DownscalingDataset(Dataset):
         self.hr_shards = hr_shards
 
         # Peek at first shard for shape info
-        first_lr = np.load(lr_shards[0])["2m_temperature"]
-        first_hr = np.load(hr_shards[0])["2m_temperature"]
+        first_lr = _load_npz_array(lr_shards[0], variable_name)
+        first_hr = _load_npz_array(hr_shards[0], variable_name)
         self.lr_shape = first_lr.shape[2:]  # [T, 1, H_lr, W_lr] → (H_lr, W_lr)
         self.hr_shape = first_hr.shape[2:]
         self.T_per_shard = first_lr.shape[0]
@@ -138,7 +152,7 @@ class DownscalingDataset(Dataset):
             print(f"[{partition}] Preloading LR shards into RAM...", flush=True)
             self._lr_data = _preload_shards(
                 lr_shards,
-                "2m_temperature",
+                variable_name,
                 partition,
                 "LR",
             )
@@ -152,7 +166,7 @@ class DownscalingDataset(Dataset):
             print(f"[{partition}] Preloading HR shards into RAM...", flush=True)
             self._hr_data = _preload_shards(
                 hr_shards,
-                "2m_temperature",
+                variable_name,
                 partition,
                 "HR",
             )
@@ -191,7 +205,10 @@ class DownscalingDataset(Dataset):
             if not hasattr(self, "_cache_lr_shard_idx"):
                 self._cache_lr_shard_idx = -1
             if shard_idx != self._cache_lr_shard_idx:
-                self._cache_lr = np.load(self.lr_shards[shard_idx])["2m_temperature"]
+                self._cache_lr = _load_npz_array(
+                    self.lr_shards[shard_idx],
+                    self.variable_name,
+                )
                 self._cache_lr_shard_idx = shard_idx
             lr = self._cache_lr[t_idx]
 
@@ -200,7 +217,10 @@ class DownscalingDataset(Dataset):
             hr = self._hr_data[real_idx]
         else:
             if shard_idx != self._cache_shard_idx:
-                self._cache_hr = np.load(self.hr_shards[shard_idx])["2m_temperature"]
+                self._cache_hr = _load_npz_array(
+                    self.hr_shards[shard_idx],
+                    self.variable_name,
+                )
                 self._cache_shard_idx = shard_idx
             hr = self._cache_hr[t_idx]
 
@@ -214,7 +234,10 @@ class DownscalingDataset(Dataset):
         if not hasattr(self, "_cache_lr_shard_idx"):
             self._cache_lr_shard_idx = -1
         if shard_idx != self._cache_lr_shard_idx:
-            self._cache_lr = np.load(self.lr_shards[shard_idx])["2m_temperature"]
+            self._cache_lr = _load_npz_array(
+                self.lr_shards[shard_idx],
+                self.variable_name,
+            )
             self._cache_lr_shard_idx = shard_idx
         return self._cache_lr[t_idx]
 

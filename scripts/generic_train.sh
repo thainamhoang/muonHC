@@ -54,9 +54,21 @@ export MASTER_PORT=$((10000 + ${SLURM_JOB_ID:-0} % 50000))
 echo "Using $NUM_GPUS GPU(s): $CUDA_VISIBLE_DEVICES"
 echo "Torch rendezvous: ${MASTER_ADDR}:${MASTER_PORT}"
 
+# Temporarily disable exit-on-error to allow sleep after torchrun
+set +e
 torchrun \
   --nnodes=1 \
   --nproc_per_node=$NUM_GPUS \
   --master_addr=$MASTER_ADDR \
   --master_port=$MASTER_PORT \
   /home/thahoa/muonHC/training.py --config $CONFIG_FILE
+
+TORCHRUN_EXIT=$?
+echo "torchrun finished with exit code $TORCHRUN_EXIT"
+
+# Keep node alive for 2 hours (7200 seconds)
+echo "Sleeping for 2 hours to keep node alive..."
+sleep 7200
+
+# Exit with the original torchrun exit code
+exit $TORCHRUN_EXIT
