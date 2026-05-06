@@ -19,6 +19,7 @@ import matplotlib
 
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
+from matplotlib.colors import LinearSegmentedColormap
 import torch
 import torch.nn.functional as F
 from omegaconf import OmegaConf
@@ -36,6 +37,31 @@ from eval_checkpoint import (
     configure_eval_backend,
 )
 from utils.runtime import configure_torch_performance, resolve_device, seed_everything
+
+
+GEOFAR_BLUE = LinearSegmentedColormap.from_list(
+    "geofar_blue",
+    [
+        "#f7fbff",
+        "#d6eff2",
+        "#9bd3dd",
+        "#4f97bd",
+        "#1f4f8b",
+        "#0b1f5e",
+    ],
+)
+
+BIAS_RED = LinearSegmentedColormap.from_list(
+    "bias_red",
+    [
+        "#fff7ec",
+        "#fee8c8",
+        "#fdbb84",
+        "#ef6548",
+        "#b30000",
+        "#67000d",
+    ],
+)
 
 
 def denormalize_target(x, dataset):
@@ -106,6 +132,14 @@ def robust_abs_limit(images, quantile=0.995):
     if values.numel() == 0:
         return 1e-6
     return max(float(torch.quantile(values, quantile)), 1e-6)
+
+
+def resolve_bias_colormap(colorway):
+    if colorway == "blue":
+        return GEOFAR_BLUE
+    if colorway == "red":
+        return BIAS_RED
+    raise ValueError("colorway must be 'blue' or 'red'")
 
 
 def collect_predictions(model, loader, device, max_batches, amp_enabled, amp_dtype):
@@ -236,6 +270,52 @@ def save_laplacian_maps(pred, target, output_dir, sample_index, channel):
     return path
 
 
+def save_laplacian_bias_map(
+    pred,
+    target,
+    output_dir,
+    sample_index,
+    channel,
+    colorway="blue",
+    mode="abs",
+    percentile=99.0,
+):
+    sample_index = min(sample_index, pred.shape[0] - 1)
+    channel = min(channel, pred.shape[1] - 1)
+    pred_one = pred[sample_index:sample_index + 1].to(torch.float32)
+    target_one = target[sample_index:sample_index + 1].to(torch.float32)
+    diff = laplacian(pred_one) - laplacian(target_one)
+    image = diff.abs()[0, channel] if mode == "abs" else diff[0, channel]
+
+    quantile = min(max(float(percentile) / 100.0, 0.0), 1.0)
+    vmax = robust_abs_limit([image], quantile=quantile)
+    if mode == "abs":
+        cmap = resolve_bias_colormap(colorway)
+        vmin = 0.0
+        cbar_label = "Laplace-filtered absolute error"
+    elif mode == "signed":
+        cmap = "coolwarm"
+        vmin = -vmax
+        cbar_label = "Laplace-filtered signed error"
+    else:
+        raise ValueError("mode must be 'abs' or 'signed'")
+
+    fig, ax = plt.subplots(figsize=(10.0, 4.0), constrained_layout=True)
+    im = ax.imshow(image.cpu(), cmap=cmap, vmin=vmin, vmax=vmax)
+    ax.set_title("Prediction Bias (Laplace filtered)", fontsize=18)
+    ax.set_axis_off()
+    cbar = fig.colorbar(im, ax=ax, fraction=0.035, pad=0.02)
+    cbar.set_label(cbar_label, fontsize=12)
+
+    path = os.path.join(
+        output_dir,
+        f"laplacian_bias_{colorway}_{mode}_sample{sample_index}_ch{channel}.png",
+    )
+    fig.savefig(path, dpi=300, bbox_inches="tight")
+    plt.close(fig)
+    return path
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--config", required=True)
@@ -248,6 +328,9 @@ def main():
     parser.add_argument("--sample-index", type=int, default=0)
     parser.add_argument("--channel", type=int, default=0)
     parser.add_argument("--n-bins", type=int, default=64)
+    parser.add_argument("--laplacian-bias-colorway", choices=["blue", "red"], default="blue")
+    parser.add_argument("--laplacian-bias-mode", choices=["abs", "signed"], default="abs")
+    parser.add_argument("--laplacian-bias-percentile", type=float, default=99.0)
     parser.add_argument("--amp", action="store_true")
     parser.add_argument("--disable-cudnn", action="store_true")
     args = parser.parse_args()
@@ -297,6 +380,16 @@ def main():
         sample_index=args.sample_index,
         channel=args.channel,
     )
+    lap_bias_path = save_laplacian_bias_map(
+        pred,
+        target,
+        args.output_dir,
+        sample_index=args.sample_index,
+        channel=args.channel,
+        colorway=args.laplacian_bias_colorway,
+        mode=args.laplacian_bias_mode,
+        percentile=args.laplacian_bias_percentile,
+    )
 
     print(f"Saved radial spectra : {spectra_path}")
     print(f"Saved spectrum error : {spectrum_error_path}")
@@ -305,6 +398,7 @@ def main():
     print(f"Saved band RMSE JSON : {band_json}")
     print(f"Saved band RMSE CSV  : {band_csv}")
     print(f"Saved Laplacian maps : {lap_path}")
+    print(f"Saved Laplacian bias : {lap_bias_path}")
     print("Band RMSE:")
     for band, value in band_metrics.items():
         print(f"  {band}: {value:.6f}")
