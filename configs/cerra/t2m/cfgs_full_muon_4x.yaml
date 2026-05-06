@@ -22,7 +22,7 @@ data:
 dataloader:
   batch_size: 32
   train_shuffle: true
-  num_workers: 4
+  num_workers: 12
   pin_memory: true
   persistent_workers: true
   prefetch_factor: 2
@@ -94,7 +94,4 @@ wandb:
     - ${global_vars.dataset}
     - ${global_vars.var_short}
     - ${global_vars.mode}
-    - 4x
-    - full_field
-    - muon_opt
   watch: false

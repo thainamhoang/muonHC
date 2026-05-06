@@ -20,9 +20,9 @@ data:
   hr_preload_eval: true
 
 dataloader:
-  batch_size: 32
+  batch_size: 16
   train_shuffle: true
-  num_workers: 4
+  num_workers: 12
   pin_memory: true
   persistent_workers: true
   prefetch_factor: 2
@@ -58,7 +58,7 @@ training:
   seed: ${global_vars.seed}
   max_epochs: 30
   patience: 5
-  grad_accum_steps: 2
+  grad_accum_steps: 4
   tf32: true
   float32_matmul_precision: high
   amp:
@@ -94,7 +94,4 @@ wandb:
     - ${global_vars.dataset}
     - ${global_vars.var_short}
     - ${global_vars.mode}
-    - 8x
-    - full_field
-    - muon_opt
   watch: false
