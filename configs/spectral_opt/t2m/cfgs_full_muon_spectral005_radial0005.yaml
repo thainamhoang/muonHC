@@ -96,7 +96,4 @@ wandb:
     - ${global_vars.mode}
     - ${global_vars.var}
     - spectral_opt
-    - spectral_005
-    - radial_0005
-    - combined_mild
   watch: false

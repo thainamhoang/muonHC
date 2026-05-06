@@ -96,6 +96,4 @@ wandb:
     - ${global_vars.mode}
     - ${global_vars.var}
     - spectral_opt
-    - radial_001
-    - first_run
   watch: false
