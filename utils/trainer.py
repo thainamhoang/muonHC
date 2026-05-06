@@ -29,7 +29,7 @@ class Trainer:
                  spectral_lambda=0.0, target_mean=278.45, target_std=21.25,
                  wandb_run=None, wandb_run_id=None, scheduler_step_by='epoch',
                  log_interval=50, resume_path=None, grad_accum_steps=1,
-                 amp_enabled=False, amp_dtype='bfloat16'):
+                 amp_enabled=False, amp_dtype='bfloat16', loss_cfg=None):
         self.model = model.to(device)
         self.train_loader = train_loader
         self.val_loader = val_loader
@@ -41,6 +41,9 @@ class Trainer:
         self.patience = patience
         self.save_dir = save_dir
         self.spectral_lambda = spectral_lambda
+        self.loss_cfg = dict(loss_cfg or {})
+        if self.spectral_lambda > 0 and "spectral_lambda" not in self.loss_cfg:
+            self.loss_cfg["spectral_lambda"] = self.spectral_lambda
         self.target_mean = target_mean
         self.target_std = target_std
         self.wandb_run = wandb_run
@@ -67,7 +70,17 @@ class Trainer:
         if resume_path is not None:
             self.load_checkpoint(resume_path)
         if self.wandb_run is not None:
-            self.wandb_run.summary['config/spectral_lambda'] = float(self.spectral_lambda)
+            self.wandb_run.summary['config/spectral_lambda'] = float(
+                self.loss_cfg.get("spectral_lambda", self.spectral_lambda)
+            )
+            if "radial_lambda" in self.loss_cfg:
+                self.wandb_run.summary['config/loss/radial_lambda'] = float(
+                    self.loss_cfg["radial_lambda"]
+                )
+            if "radial_bins" in self.loss_cfg:
+                self.wandb_run.summary['config/loss/radial_bins'] = int(
+                    self.loss_cfg["radial_bins"]
+                )
             self.wandb_run.summary['config/grad_accum_steps'] = int(self.grad_accum_steps)
             self.wandb_run.summary['config/effective_batch_size'] = (
                 int(self.train_loader.batch_size) * int(self.grad_accum_steps)
@@ -160,15 +173,13 @@ class Trainer:
             pred_loss = pred.float()
             hr_loss = hr.float()
             mse = nn.functional.mse_loss(pred_loss, hr_loss)
-            loss = mse  # spectral loss can be added later if needed
-            if self.spectral_lambda > 0:
-                from losses.spectral_loss import spectral_loss
-                loss = spectral_loss(
-                    pred_loss,
-                    hr_loss,
-                    lambda_=self.spectral_lambda,
-                    mse=mse,
-                )
+            from losses.spectral_loss import mse_spectral_radial_loss
+            loss = mse_spectral_radial_loss(
+                pred_loss,
+                hr_loss,
+                loss_cfg=self.loss_cfg,
+                mse=mse,
+            )
             scaled_loss = loss / self.grad_accum_steps
             if self.grad_scaler.is_enabled():
                 self.grad_scaler.scale(scaled_loss).backward()

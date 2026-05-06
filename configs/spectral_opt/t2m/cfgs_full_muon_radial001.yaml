@@ -1,0 +1,101 @@
+global_vars:
+  dataset: era5
+  data_root: /scratch/thahoa/climate/era5-climate-learn/data
+  output_root: /home/thahoa/muonHC/output
+  lr_deg: 5.625
+  hr_deg: 1.40625
+  var: 2m_temperature
+  var_short: t2m
+  seed: 42
+  mode: full_muon_radial001
+
+data:
+  lr_dir: ${global_vars.data_root}/${global_vars.lr_deg}deg/${global_vars.var}
+  hr_dir: ${global_vars.data_root}/${global_vars.hr_deg}deg/${global_vars.var}
+  stride: 6
+  temporal: true
+  lr_preload_train: true
+  hr_preload_train: true
+  lr_preload_eval: true
+  hr_preload_eval: true
+
+dataloader:
+  batch_size: 64
+  train_shuffle: true
+  num_workers: 12
+  pin_memory: true
+  persistent_workers: true
+  prefetch_factor: 2
+
+model:
+  n_coeff: 64
+  in_channels: 3
+  embed_dim: 128
+  num_heads: 4
+  upscale: 4
+  decoder_hidden_dim: 256
+  backbone: hyperloop_mhc
+  hyperloop:
+    begin_depth: 2
+    middle_depth: 4
+    end_depth: 2
+    K: 3
+    n_streams: 2
+    mlp_ratio: 4
+    dropout: 0.0
+    sinkhorn_iters: 5
+    use_spatial_gate: false
+    gate_hidden_ratio: 0.25
+    gate_init_bias: -1.0
+  geo_inr:
+    n_basis: 8
+    out_dim: 128
+    hidden_dim: 256
+
+training:
+  device: cuda
+  seed: ${global_vars.seed}
+  max_epochs: 60
+  patience: 15
+  grad_accum_steps: 1
+  tf32: true
+  float32_matmul_precision: high
+  amp:
+    enabled: true
+    dtype: bfloat16
+  log_interval: 25
+  save_dir: ${global_vars.output_root}/${global_vars.dataset}/${global_vars.var_short}_${global_vars.mode}_${model.upscale}x_stride${data.stride}_seed${global_vars.seed}
+  optimizer:
+    type: muon_adamw
+    muon_lr: 0.004
+    muon_weight_decay: 0.05
+    muon_momentum: 0.95
+    muon_ns_steps: 5
+    muon_nesterov: true
+    adamw_lr: 1.0e-4
+    adamw_weight_decay: 0.01
+    adamw_betas: [0.9, 0.95]
+    adamw_eps: 1.0e-8
+  scheduler:
+    type: warmup_cosine
+    warmup_epochs: 10
+    warmup_start_factor: 0.01
+    min_lr: 1.0e-6
+    step_by: step
+  loss:
+    spectral_lambda: 0.0
+    radial_lambda: 0.01
+    radial_bins: 64
+
+wandb:
+  entity: thainamhoang
+  project: muonHC
+  name: ${global_vars.dataset}_${global_vars.var_short}_${global_vars.mode}_${model.upscale}x_stride${data.stride}_seed${global_vars.seed}
+  tags:
+    - ${global_vars.dataset}
+    - ${global_vars.mode}
+    - ${global_vars.var}
+    - spectral_opt
+    - radial_001
+    - first_run
+  watch: false

@@ -136,7 +136,10 @@ def main():
 
     # Spectral loss lambda (optional)
     spectral_lambda = get_spectral_lambda(config)
-    print(f"Spectral loss lambda: {spectral_lambda}")
+    loss_cfg = to_plain_container(config.training.get('loss', config.get('loss', {}))) or {}
+    if spectral_lambda > 0 and 'spectral_lambda' not in loss_cfg:
+        loss_cfg['spectral_lambda'] = spectral_lambda
+    print(f"Loss config: {loss_cfg}")
     amp_cfg = config.training.get('amp', {})
     amp_enabled = bool(amp_cfg.get('enabled', False))
     amp_dtype = amp_cfg.get('dtype', 'bfloat16')
@@ -175,6 +178,7 @@ def main():
         grad_accum_steps=grad_accum_steps,
         amp_enabled=amp_enabled,
         amp_dtype=amp_dtype,
+        loss_cfg=loss_cfg,
     )
 
     best_val_rmse = trainer.train()
