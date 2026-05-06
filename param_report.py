@@ -7,6 +7,7 @@ Example:
 """
 
 import argparse
+import math
 import os
 import sys
 
@@ -207,6 +208,10 @@ def _conv2d_params(in_channels, out_channels, kernel_size, groups=1, bias=True):
     return weight + (out_channels if bias else 0)
 
 
+def _linear_params(in_features, out_features, bias=True):
+    return out_features * in_features + (out_features if bias else 0)
+
+
 def _transformer_block_params(dim, mlp_ratio):
     hidden_dim = int(dim * mlp_ratio)
     layer_norms = 4 * dim
@@ -333,6 +338,189 @@ def _analytic_counts_from_config(config, lr_shape, hr_shape):
     counts["decoder"] = decoder_params
     counts["total"] = counts["fck"] + counts["vit"] + counts["geo_inr"] + counts["decoder"]
     return counts
+
+
+def _geofar_vit_mapper_params(
+    img_size=(64, 128),
+    in_channels=64,
+    out_channels=1,
+    patch_size=4,
+    embed_dim=128,
+    depth=8,
+    decoder_depth=2,
+    mlp_ratio=4.0,
+    learn_pos_emb=True,
+):
+    grid_h = img_size[0] // patch_size
+    grid_w = img_size[1] // patch_size
+    patch_embed = _conv2d_params(in_channels, embed_dim, patch_size, bias=True)
+    pos_embed = grid_h * grid_w * embed_dim if learn_pos_emb else 0
+    blocks = depth * _transformer_block_params(embed_dim, mlp_ratio)
+    norm = 2 * embed_dim
+    head = decoder_depth * _linear_params(embed_dim, embed_dim)
+    head += _linear_params(embed_dim, out_channels * patch_size * patch_size)
+    return {
+        "patch_embed": patch_embed,
+        "pos_embed": pos_embed,
+        "transformer_blocks": blocks,
+        "norm": norm,
+        "head": head,
+        "total": patch_embed + pos_embed + blocks + norm + head,
+    }
+
+
+def _geofar_geo_inr_params(n_sh_coeff=64, in_channels=1):
+    oro_encoder = _conv2d_params(3, 32, 3) + _conv2d_params(32, n_sh_coeff, 3)
+    siren = (
+        _linear_params(n_sh_coeff, 128)
+        + _linear_params(128, 128)
+        + _linear_params(128, n_sh_coeff)
+    )
+    projection = _conv2d_params(n_sh_coeff * in_channels, 64, 1)
+    conv = (
+        _conv2d_params(64, 128, 3)
+        + _conv2d_params(128, 256, 3)
+        + _conv2d_params(256, 128, 3)
+        + _conv2d_params(128, n_sh_coeff * in_channels, 1)
+    )
+    return {
+        "oro_encoder": oro_encoder,
+        "siren": siren,
+        "projection": projection,
+        "conv": conv,
+        "total": oro_encoder + siren + projection + conv,
+    }
+
+
+def _geofar_vit_preset_counts(target_shape=(64, 128), trainable_only=True):
+    # eceo-epfl/GeoFAR experiments/downscaling/era5_era5_downscale.py: geofar_vit.
+    n_coeff = 64
+    n_sh_coeff = 64
+    in_channels = 1
+    n_basis = int(n_coeff**0.5)
+    dct_weight = n_coeff * in_channels * 8 * 8
+    dct_bias = n_coeff
+    freqconv = dct_bias if trainable_only else dct_weight + dct_bias
+    geo_inr = _geofar_geo_inr_params(n_sh_coeff=n_sh_coeff, in_channels=in_channels)
+    mapper = _geofar_vit_mapper_params(
+        img_size=target_shape,
+        in_channels=n_coeff * in_channels,
+        out_channels=1,
+        patch_size=4,
+        embed_dim=128,
+        depth=8,
+        decoder_depth=2,
+        learn_pos_emb=True,
+    )
+    return {
+        "model": "GeoFAR[ViT]",
+        "freqconv": freqconv,
+        "geo_inr": geo_inr["total"],
+        "mapper_vit": mapper["total"],
+        "total": freqconv + geo_inr["total"] + mapper["total"],
+        "details": {
+            "n_basis": n_basis,
+            "freqconv_full": dct_weight + dct_bias,
+            "geo_inr": geo_inr,
+            "mapper_vit": mapper,
+        },
+    }
+
+
+def _geofar_resnet_preset_counts():
+    # eceo-epfl/GeoFAR experiments/downscaling/era5_era5_downscale.py: resnet.
+    hidden_channels = 128
+    n_blocks = 28
+    image_proj = _conv2d_params(1, hidden_channels, 7)
+    block = (
+        _conv2d_params(hidden_channels, hidden_channels, 3)
+        + _conv2d_params(hidden_channels, hidden_channels, 3)
+        + 4 * hidden_channels
+    )
+    blocks = n_blocks * block
+    norm = 2 * hidden_channels
+    final = _conv2d_params(hidden_channels, 1, 7)
+    return {
+        "model": "ResNet",
+        "image_proj": image_proj,
+        "blocks": blocks,
+        "norm": norm,
+        "final": final,
+        "total": image_proj + blocks + norm + final,
+    }
+
+
+def _geofar_edsr_preset_counts(ratio=2):
+    # eceo-epfl/GeoFAR experiments/downscaling/era5_era5_downscale.py: edsr.
+    n_feats = 128
+    n_resblocks = 28
+    n_colors = 1
+    head = _conv2d_params(n_colors, n_feats, 3)
+    resblock = 2 * _conv2d_params(n_feats, n_feats, 3)
+    body_blocks = n_resblocks * resblock
+    body_tail = _conv2d_params(n_feats, n_feats, 3)
+    if ratio & (ratio - 1) == 0:
+        upsampler = int(math.log(ratio, 2)) * _conv2d_params(n_feats, 4 * n_feats, 3)
+    elif ratio == 3:
+        upsampler = _conv2d_params(n_feats, 9 * n_feats, 3)
+    else:
+        raise ValueError("EDSR ratio must be a power of two or 3")
+    tail = upsampler + _conv2d_params(n_feats, n_colors, 3)
+    return {
+        "model": "EDSR",
+        "head": head,
+        "body_blocks": body_blocks,
+        "body_tail": body_tail,
+        "tail": tail,
+        "total": head + body_blocks + body_tail + tail,
+    }
+
+
+def _geofar_deepsd_preset_counts():
+    # eceo-epfl/GeoFAR experiments/downscaling/era5_era5_downscale.py: deepsd.
+    stage = (
+        _conv2d_params(2, 32, 9)
+        + _conv2d_params(32, 16, 1)
+        + _conv2d_params(16, 1, 5)
+    )
+    return {
+        "model": "DeepSD",
+        "stage": stage,
+        "stages": 3,
+        "total": 3 * stage,
+    }
+
+
+def _collect_geofar_baselines(target_shape, ratio, trainable_only):
+    return [
+        _geofar_vit_preset_counts(target_shape=target_shape, trainable_only=trainable_only),
+        _geofar_resnet_preset_counts(),
+        _geofar_edsr_preset_counts(ratio=ratio),
+        _geofar_deepsd_preset_counts(),
+    ]
+
+
+def _print_geofar_baselines(rows, trainable_only):
+    label = "trainable" if trainable_only else "all"
+    print(f"\nGeoFAR ERA5 baseline parameter counts ({label} parameters)")
+    print(f"{'Model':<14} {'Params':>14} {'Main components':>42}")
+    print("-" * 72)
+    for row in rows:
+        if row["model"] == "GeoFAR[ViT]":
+            components = (
+                f"freq {row['freqconv']:,}; geo {row['geo_inr']:,}; "
+                f"ViT {row['mapper_vit']:,}"
+            )
+        elif row["model"] == "ResNet":
+            components = f"stem {row['image_proj']:,}; blocks {row['blocks']:,}; head {row['final']:,}"
+        elif row["model"] == "EDSR":
+            components = (
+                f"head {row['head']:,}; blocks {row['body_blocks']:,}; "
+                f"tail {row['body_tail'] + row['tail']:,}"
+            )
+        else:
+            components = f"3 x SRCNN stage ({row['stage']:,} each)"
+        print(f"{row['model']:<14} {row['total']:>14,} {components:>42}")
 
 
 def _count_parameter(parameter, trainable_only=True):
@@ -506,9 +694,26 @@ def _print_breakdown(row):
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("configs", nargs="+", help="Config YAML files to compare")
+    parser.add_argument("configs", nargs="*", help="Config YAML files to compare")
     parser.add_argument("--lr-shape", type=_shape_arg, default=(32, 64), help="LR shape as H,W")
     parser.add_argument("--hr-shape", type=_shape_arg, default=(128, 256), help="HR shape as H,W")
+    parser.add_argument(
+        "--geofar-baselines",
+        action="store_true",
+        help="Also print analytic counts for GeoFAR ERA5 ViT, ResNet, EDSR, and DeepSD presets.",
+    )
+    parser.add_argument(
+        "--geofar-target-shape",
+        type=_shape_arg,
+        default=(64, 128),
+        help="GeoFAR ERA5 target shape as H,W; upstream era5_era5_downscale.py defaults to 64,128.",
+    )
+    parser.add_argument(
+        "--geofar-ratio",
+        type=int,
+        default=2,
+        help="GeoFAR EDSR upsampling ratio; upstream era5_era5_downscale.py defaults to 2.",
+    )
     parser.add_argument("--all-params", action="store_true", help="Count frozen parameters too")
     parser.set_defaults(breakdown=True)
     parser.add_argument("--breakdown", action="store_true", help="Print component shares per model")
@@ -516,35 +721,48 @@ def main():
     args = parser.parse_args()
 
     trainable_only = not args.all_params
+    if not args.configs and not args.geofar_baselines:
+        parser.error("provide at least one config path or pass --geofar-baselines")
+
     if DownscalingModel is None:
         print("torch is not available; using analytic counts for the current repo modules.")
-    rows = [
-        _collect_row(path, args.lr_shape, args.hr_shape, trainable_only=trainable_only)
-        for path in args.configs
-    ]
 
-    _print_table(rows)
+    if args.configs:
+        rows = [
+            _collect_row(path, args.lr_shape, args.hr_shape, trainable_only=trainable_only)
+            for path in args.configs
+        ]
 
-    if len(rows) >= 2:
-        baseline = rows[0]
-        print(f"\nReduction vs {baseline['name']}:")
-        for row in rows[1:]:
-            backbone_reduction = reduction_percent(
-                baseline["backbone_params"],
-                row["backbone_params"],
-            )
-            full_reduction = reduction_percent(
-                baseline["full_params"],
-                row["full_params"],
-            )
-            print(
-                f"  {row['name']}: backbone {backbone_reduction:.2f}%, "
-                f"full model {full_reduction:.2f}%"
-            )
+        _print_table(rows)
 
-    if args.breakdown:
-        for row in rows:
-            _print_breakdown(row)
+        if len(rows) >= 2:
+            baseline = rows[0]
+            print(f"\nReduction vs {baseline['name']}:")
+            for row in rows[1:]:
+                backbone_reduction = reduction_percent(
+                    baseline["backbone_params"],
+                    row["backbone_params"],
+                )
+                full_reduction = reduction_percent(
+                    baseline["full_params"],
+                    row["full_params"],
+                )
+                print(
+                    f"  {row['name']}: backbone {backbone_reduction:.2f}%, "
+                    f"full model {full_reduction:.2f}%"
+                )
+
+        if args.breakdown:
+            for row in rows:
+                _print_breakdown(row)
+
+    if args.geofar_baselines:
+        geofar_rows = _collect_geofar_baselines(
+            target_shape=args.geofar_target_shape,
+            ratio=args.geofar_ratio,
+            trainable_only=trainable_only,
+        )
+        _print_geofar_baselines(geofar_rows, trainable_only=trainable_only)
 
 
 if __name__ == "__main__":
