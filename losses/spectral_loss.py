@@ -1,9 +1,11 @@
-"""Spectral loss from your FGD, ready to plug in."""
+"""Spectral and Laplacian training losses."""
+
 import torch
 import torch.fft
+import torch.nn.functional as F
 
 _WEIGHT_CACHE = {}
-_RADIAL_BIN_CACHE = {}
+_LAPLACIAN_KERNEL_CACHE = {}
 
 
 def _frequency_weight(height, width, device, dtype, freq_ramp):
@@ -13,70 +15,62 @@ def _frequency_weight(height, width, device, dtype, freq_ramp):
 
     y = torch.arange(height, device=device, dtype=dtype)
     x = torch.arange(width // 2 + 1, device=device, dtype=dtype)
-    yy, xx = torch.meshgrid(y, x, indexing='ij')
+    yy, xx = torch.meshgrid(y, x, indexing="ij")
     freq = torch.sqrt(yy.square() + xx.square())
-    weight = 1.0 + freq_ramp * freq / freq.max()
+    weight = 1.0 + freq_ramp * freq / freq.max().clamp_min(1e-12)
     _WEIGHT_CACHE[key] = weight
     return weight
 
 
 def spectral_loss(pred, target, lambda_=0.1, freq_ramp=10.0, mse=None):
-    """MSE + λ * frequency-weighted L1 in Fourier domain."""
+    """MSE + lambda * frequency-weighted L1 in Fourier domain."""
     if mse is None:
-        mse = torch.nn.functional.mse_loss(pred, target)
-    # FFT
-    pred_fft = torch.fft.rfft2(pred, norm='ortho')
-    target_fft = torch.fft.rfft2(target, norm='ortho')
-    # Radial frequency weights
-    H, W = pred.shape[-2], pred.shape[-1]
-    weight = _frequency_weight(H, W, pred.device, pred.real.dtype, freq_ramp)
+        mse = F.mse_loss(pred, target)
+    pred_fft = torch.fft.rfft2(pred, norm="ortho")
+    target_fft = torch.fft.rfft2(target, norm="ortho")
+    height, width = pred.shape[-2], pred.shape[-1]
+    weight = _frequency_weight(height, width, pred.device, pred.real.dtype, freq_ramp)
     spec_l1 = (weight * torch.abs(pred_fft - target_fft)).mean()
     return mse + lambda_ * spec_l1
 
 
-def _radial_bins(height, width, device, n_bins):
-    key = (height, width, str(device), int(n_bins))
-    if key in _RADIAL_BIN_CACHE:
-        return _RADIAL_BIN_CACHE[key]
+def _laplacian_kernel(channels, device, dtype):
+    key = (int(channels), str(device), dtype)
+    if key in _LAPLACIAN_KERNEL_CACHE:
+        return _LAPLACIAN_KERNEL_CACHE[key]
 
-    fy = torch.fft.fftfreq(height, device=device)
-    fx = torch.fft.fftfreq(width, device=device)
-    yy, xx = torch.meshgrid(fy, fx, indexing="ij")
-    radius = torch.sqrt(xx.square() + yy.square())
-    radius = radius / radius.max().clamp_min(1e-12)
-    bin_idx = torch.clamp((radius * n_bins).long(), max=n_bins - 1).flatten()
-    counts = torch.bincount(bin_idx, minlength=n_bins).float().clamp_min(1.0)
-    _RADIAL_BIN_CACHE[key] = (bin_idx, counts)
-    return bin_idx, counts
-
-
-def radial_spectrum(pred, n_bins=64):
-    pred = pred.float()
-    pred = pred - pred.mean(dim=(-2, -1), keepdim=True)
-    spectrum = torch.log1p(torch.fft.fft2(pred, dim=(-2, -1)).abs())
-    height, width = pred.shape[-2:]
-    bin_idx, counts = _radial_bins(height, width, pred.device, n_bins)
-    values = spectrum.reshape(-1, height * width)
-    summed = torch.zeros(values.shape[0], n_bins, device=pred.device, dtype=values.dtype)
-    summed.scatter_add_(1, bin_idx.expand(values.shape[0], -1), values)
-    return (summed / counts.to(device=pred.device, dtype=values.dtype)).mean(dim=0)
+    kernel = torch.tensor(
+        [[0.0, 1.0, 0.0], [1.0, -4.0, 1.0], [0.0, 1.0, 0.0]],
+        device=device,
+        dtype=dtype,
+    ).view(1, 1, 3, 3)
+    kernel = kernel.expand(channels, 1, 3, 3).contiguous()
+    _LAPLACIAN_KERNEL_CACHE[key] = kernel
+    return kernel
 
 
-def radial_spectrum_loss(pred, target, n_bins=64):
-    pred_spec = radial_spectrum(pred, n_bins=n_bins)
-    target_spec = radial_spectrum(target, n_bins=n_bins)
-    return torch.nn.functional.l1_loss(pred_spec, target_spec)
+def laplacian_filter(x):
+    """Apply a 3x3 Laplacian filter with reflect padding."""
+    channels = x.shape[1]
+    kernel = _laplacian_kernel(channels, x.device, x.dtype)
+    x = F.pad(x, (1, 1, 1, 1), mode="reflect")
+    return F.conv2d(x, kernel, groups=channels)
 
 
-def mse_spectral_radial_loss(pred, target, loss_cfg=None, mse=None):
-    """MSE plus optional existing spectral loss and targeted radial spectrum loss."""
+def laplacian_loss(pred, target):
+    """L1 distance between Laplacian-filtered prediction and target."""
+    return F.l1_loss(laplacian_filter(pred), laplacian_filter(target))
+
+
+def mse_spectral_laplacian_loss(pred, target, loss_cfg=None, mse=None):
+    """MSE plus optional spectral loss and spatially grounded Laplacian loss."""
     if mse is None:
-        mse = torch.nn.functional.mse_loss(pred, target)
+        mse = F.mse_loss(pred, target)
     if loss_cfg is None:
         return mse
 
     spectral_lambda = float(loss_cfg.get("spectral_lambda", 0.0))
-    radial_lambda = float(loss_cfg.get("radial_lambda", 0.0))
+    laplacian_lambda = float(loss_cfg.get("laplacian_lambda", 0.0))
 
     loss = mse
     if spectral_lambda > 0.0:
@@ -87,10 +81,6 @@ def mse_spectral_radial_loss(pred, target, loss_cfg=None, mse=None):
             freq_ramp=float(loss_cfg.get("freq_ramp", 10.0)),
             mse=mse,
         )
-    if radial_lambda > 0.0:
-        loss = loss + radial_lambda * radial_spectrum_loss(
-            pred,
-            target,
-            n_bins=int(loss_cfg.get("radial_bins", 64)),
-        )
+    if laplacian_lambda > 0.0:
+        loss = loss + laplacian_lambda * laplacian_loss(pred, target)
     return loss

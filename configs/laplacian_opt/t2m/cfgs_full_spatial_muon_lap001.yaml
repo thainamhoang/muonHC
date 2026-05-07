@@ -6,8 +6,8 @@ global_vars:
   hr_deg: 1.40625
   var: 2m_temperature
   var_short: t2m
-  seed: 42
-  mode: full_muon_spectral005_radial0005
+  seed: 2026
+  mode: full_spatial_muon_lap001
 
 data:
   lr_dir: ${global_vars.data_root}/${global_vars.lr_deg}deg/${global_vars.var}
@@ -44,12 +44,12 @@ model:
     mlp_ratio: 4
     dropout: 0.0
     sinkhorn_iters: 5
-    use_spatial_gate: false
+    use_spatial_gate: true
     gate_hidden_ratio: 0.25
     gate_init_bias: -1.0
   geo_inr:
     n_basis: 8
-    out_dim: 128
+    out_dim: 256
     hidden_dim: 256
 
 training:
@@ -83,9 +83,8 @@ training:
     min_lr: 1.0e-6
     step_by: step
   loss:
-    spectral_lambda: 0.05
-    radial_lambda: 0.005
-    radial_bins: 64
+    spectral_lambda: 0.1
+    laplacian_lambda: 0.01
 
 wandb:
   entity: thainamhoang
@@ -95,5 +94,5 @@ wandb:
     - ${global_vars.dataset}
     - ${global_vars.mode}
     - ${global_vars.var}
-    - spectral_opt
+    - laplacian_opt
   watch: false

@@ -73,13 +73,9 @@ class Trainer:
             self.wandb_run.summary['config/spectral_lambda'] = float(
                 self.loss_cfg.get("spectral_lambda", self.spectral_lambda)
             )
-            if "radial_lambda" in self.loss_cfg:
-                self.wandb_run.summary['config/loss/radial_lambda'] = float(
-                    self.loss_cfg["radial_lambda"]
-                )
-            if "radial_bins" in self.loss_cfg:
-                self.wandb_run.summary['config/loss/radial_bins'] = int(
-                    self.loss_cfg["radial_bins"]
+            if "laplacian_lambda" in self.loss_cfg:
+                self.wandb_run.summary['config/loss/laplacian_lambda'] = float(
+                    self.loss_cfg["laplacian_lambda"]
                 )
             self.wandb_run.summary['config/grad_accum_steps'] = int(self.grad_accum_steps)
             self.wandb_run.summary['config/effective_batch_size'] = (
@@ -173,8 +169,8 @@ class Trainer:
             pred_loss = pred.float()
             hr_loss = hr.float()
             mse = nn.functional.mse_loss(pred_loss, hr_loss)
-            from losses.spectral_loss import mse_spectral_radial_loss
-            loss = mse_spectral_radial_loss(
+            from losses.spectral_loss import mse_spectral_laplacian_loss
+            loss = mse_spectral_laplacian_loss(
                 pred_loss,
                 hr_loss,
                 loss_cfg=self.loss_cfg,
